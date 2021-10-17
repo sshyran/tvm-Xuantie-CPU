@@ -14,10 +14,13 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-
 # pylint: disable=invalid-name, unused-argument, too-many-lines, import-outside-toplevel
-# pylint: disable=no-else-return, no-else-continue
+# pylint: disable=unused-variable, no-else-return, eval-used, multiple-statements
+# pylint: disable=consider-using-enumerate, logging-format-interpolation
+# pylint: disable=no-else-continue
 """Caffe frontend."""
+from __future__ import absolute_import as _abs
+import logging
 import numpy as np
 import tvm
 from tvm.ir import IRModule
@@ -28,6 +31,7 @@ from .. import op as _op
 from ... import nd as _nd
 from .common import ExprTable
 from .common import infer_shape as _infer_shape
+from .common import AttrCvt
 
 __all__ = ["from_caffe"]
 
@@ -43,40 +47,307 @@ class OperatorConverter(object):
         self.changed_layers = None
 
         self.convert_map = {
-            "BatchNorm": self.convert_batch_norm,
-            "Concat": self.convert_concat,
-            "Convolution": self.convert_conv,
-            "Crop": self.convert_crop,
-            "Deconvolution": self.convert_deconv,
-            "Dropout": self.convert_dropout,
-            "Eltwise": self.convert_eltwise,
-            "Flatten": self.convert_flatten,
-            "InnerProduct": self.convert_innerproduct,
+            "BatchNorm": self.bn,
+            "Concat": self.concat,
+            "Convolution": self.conv,
+            "DepthwiseConvolution": self.conv,
+            "Crop": self.crop,
+            "Deconvolution": self.deconv,
+            "Dropout": self.dropout,
+            "Eltwise": self.eltwise,
+            "Flatten": self.flatten,
+            "InnerProduct": self.innerproduct,
             "Input": None,
-            "LRN": self.convert_lrn,
-            "Pooling": self.convert_pooling,
-            "PReLU": self.convert_prelu,
-            "ReLU": self.convert_relu,
-            "Reshape": self.convert_reshape,
-            "Scale": self.convert_scale,
-            "Sigmoid": self.convert_sigmoid,
-            "Slice": self.convert_slice,
-            "Softmax": self.convert_softmax,
-            "TanH": self.convert_tanh,
+            "LRN": self.lrn,
+            "Normalize": self.normalize,
+            "Permute": self.permute,
+            "Pooling": self.pooling,
+            "PReLU": self.prelu,
+            "PriorBox": self.priorbox,
+            "proposal": self.proposal,
+            "PSROIPooling": self.psroipooling,
+            "Python": self.python_layer,
+            "ReLU": self.relu,
+            "Reshape": self.reshape,
+            "Resize": self.resize,
+            "ROIPooling": self.roipooling,
+            "Scale": self.scale,
+            "Sigmoid": self.sigmoid,
+            "Slice": self._slice,
+            "Softmax": self.softmax,
+            "TanH": self.tanh,
+            "Upsample": self.upsample,
         }
 
-    def convert_flatten(self, op):
-        """ Convert Flatten layer """
+    def resize(self, op):
+        """ Convert Resize layer """
         inputs = op.bottom
+
+        # obtain layer params
+        resize_param = op.img_size_param
+        x_scale = float(resize_param.x_scaling)
+        y_scale = float(resize_param.y_scaling)
+
+        # get input expr
         in_expr = self.exp_tab.get_expr(inputs[0])
 
-        flatten_params = op.flatten_param.axis
-        assert flatten_params == 1, "flatten axis should be 1"
-        out = _op.nn.batch_flatten(in_expr)
+        # set tvm op params
+        params = dict()
+        params["scale_h"] = y_scale
+        params["scale_w"] = x_scale
+        params["layout"] = "NCHW"
+        params["method"] = "bilinear"
+        params["align_corners"] = False
+
+        out = AttrCvt(op_name="upsampling")([in_expr], params)
 
         return out
 
-    def convert_eltwise(self, op):
+    def upsample(self, op):
+        """ Convert Unsample layer """
+        inputs = op.bottom
+        upsample_param = op.upsample_param
+
+        scale = float(upsample_param.scale)
+
+        # get input expr
+        in_expr = self.exp_tab.get_expr(inputs[0])
+        # set params
+        params = dict()
+        params["layout"] = "NCHW"
+        if len(inputs) == 1:
+            params["scale_h"] = scale
+            params["scale_w"] = scale
+            params["method"] = "nearest_neighbor"
+            params["align_corners"] = False
+            out = AttrCvt(op_name="upsampling")([in_expr], params)
+        elif len(inputs) == 2:
+            mask_expr = self.exp_tab.get_expr(inputs[1])
+            params["scale_h"] = int(scale)
+            params["scale_w"] = int(scale)
+            out = AttrCvt(op_name="vision.unpooling")([in_expr, mask_expr], params)
+
+        return out
+
+    def python_layer(self, op):
+        """ Convert Python layer """
+        inputs = op.bottom
+        python_params = op.python_param
+
+        curr_layer_name = python_params.layer.lower()
+        if curr_layer_name == "proposallayer":
+            param_dict = {}
+            param_str = python_params.param_str
+            if "{" in param_str:
+                param_dict = eval(param_str)
+            else:
+                param_str = "{" + param_str + "}"
+                param_dict = eval(param_str)
+            # get input expr
+            rpn_cls_prob_expr = self.exp_tab.get_expr(inputs[0])
+            rpn_bbox_pred_expr = self.exp_tab.get_expr(inputs[1])
+            # im_info_expr = self.exp_tab.get_expr(inputs[2])
+
+            model_input = self.predict_layer[0].top[0]
+            n, c, h, w = _infer_shape(self.exp_tab.get_expr(model_input))
+            im_info = np.array([h, w, 1], dtype=np.float32)
+            im_info = np.tile(im_info, (n, 1))
+            im_info_expr = self.exp_tab.new_const(im_info, dtype="float32")
+
+            # set tvm proposal params
+            proposal_params_tvm = dict()
+            proposal_params_tvm["scales"] = (
+                param_dict["scales"] if "scales" in param_dict else [8.0, 16.0, 32.0]
+            )
+            proposal_params_tvm["ratios"] = (
+                param_dict["ratios"] if "ratios" in param_dict else [0.5, 1.0, 2.0]
+            )
+            proposal_params_tvm["feature_stride"] = (
+                param_dict["feat_stride"] if "feat_stride" in param_dict else 16
+            )
+            proposal_params_tvm["rpn_pre_nms_top_n"] = (
+                param_dict["rpn_pre_nms_top_n"] if "rpn_pre_nms_top_n" in param_dict else 6000
+            )
+            proposal_params_tvm["rpn_post_nms_top_n"] = (
+                param_dict["rpn_post_nms_top_n"] if "rpn_post_nms_top_n" in param_dict else 300
+            )
+            proposal_params_tvm["threshold"] = (
+                param_dict["rpn_nms_thresh"] if "rpn_nms_thresh" in param_dict else 0.7
+            )
+            proposal_params_tvm["rpn_min_size"] = (
+                param_dict["rpn_min_size"] if "rpn_min_size" in param_dict else 16
+            )
+            proposal_params_tvm["iou_loss"] = (
+                param_dict["iou_loss"] if "iou_loss" in param_dict else False
+            )
+
+            out = AttrCvt(op_name="vision.proposal")(
+                [rpn_cls_prob_expr, rpn_bbox_pred_expr, im_info_expr], proposal_params_tvm
+            )
+        else:
+            tvm.error.OpNotImplemented("Python.{} has not been supported!".format(curr_layer_name))
+        return out
+
+    def psroipooling(self, op):
+        """ Convert PSROIPooling layer """
+        inputs = op.bottom
+        psroi_pooling_param = op.psroi_pooling_param
+
+        # get inputs expr
+        rfcn_cls_expr = self.exp_tab.get_expr(inputs[0])
+        rois_expr = self.exp_tab.get_expr(inputs[1])
+
+        # set tvm params
+        params = dict()
+        params["spatial_scale"] = psroi_pooling_param.spatial_scale
+        params["output_dim"] = psroi_pooling_param.output_dim
+        params["group_size"] = psroi_pooling_param.group_size
+
+        out = AttrCvt(op_name="vision.psroipooling")([rfcn_cls_expr, rois_expr], params)
+        return out
+
+    def permute(self, op):
+        """ Convert Permute layer """
+        inputs = op.bottom
+        in_expr = self.exp_tab.get_expr(inputs[0])
+        permute_params = op.permute_param.order
+
+        out = AttrCvt(op_name="transpose")([in_expr], {"axes": permute_params})
+        return out
+
+    def normalize(self, op):
+        """ Convert Normalize layer """
+        inputs = op.bottom
+        in_expr = self.exp_tab.get_expr(inputs[0])
+        in_shape = _infer_shape(in_expr)
+        norm_params = op.norm_param
+
+        across_spatial = norm_params.across_spatial
+        channel_shared = norm_params.channel_shared
+        eps = norm_params.eps
+
+        scale_type = norm_params.scale_filler.type
+
+        if channel_shared:
+            scale = np.asarray(norm_params.scale_filler.value, np.float32)
+            scale_expr = self.exp_tab.new_const(scale, dtype="float32")
+        else:
+            weight_bias_blobs = self.init_layer_dict[op.name].blobs
+            scale = np.asarray(weight_bias_blobs[0].data, np.float32).reshape(
+                (in_shape[0], in_shape[1], 1, 1)
+            )
+            scale_expr = self.exp_tab.new_const(scale, dtype="float32")
+        if across_spatial:
+            out = AttrCvt(op_name="l2_normalize")([in_expr], {"eps": eps})
+        else:
+            out = AttrCvt(op_name="l2_normalize")([in_expr], {"eps": eps, "axis": [1]})
+
+        out = AttrCvt(op_name="multiply")([out, scale_expr], {})
+        return out
+
+    def add_box(self, top_data, x, y, width, height, img_width, img_height):
+        """ Generate box coordinate """
+        # xmin
+        top_data.append((x - width / 2.0) / img_width)
+        # ymin
+        top_data.append((y - height / 2.0) / img_height)
+        # xmax
+        top_data.append((x + width / 2.0) / img_width)
+        # ymax
+        top_data.append((y + height / 2.0) / img_height)
+        return top_data
+
+    def priorbox(self, op):
+        """ Convert PriorBox layer """
+        inputs = op.bottom
+
+        in_expr = self.exp_tab.get_expr(inputs[0])
+        in_expr_img = self.exp_tab.get_expr(inputs[1])
+        pre_n, pre_c, pre_h, pre_w = _infer_shape(in_expr)
+
+        img_n, img_c, img_h, img_w = _infer_shape(in_expr_img)
+
+        priorbox_params = op.prior_box_param
+        flip = priorbox_params.flip
+        variance = np.asarray(priorbox_params.variance)
+        ratios = [1]
+        for r in priorbox_params.aspect_ratio:
+            if r != 1:
+                ratios.append(r)
+                if flip:
+                    ratios.append(1 / r)
+
+        min_size = priorbox_params.min_size
+        max_size = priorbox_params.max_size
+
+        steps = priorbox_params.step
+        if steps:
+            step_h = step_w = steps
+        else:
+            step_h = img_h / pre_h
+            step_w = img_w / pre_w
+
+        offsets = priorbox_params.offset
+        clip = priorbox_params.clip
+        num_priors_ = len(ratios)
+        if max_size:
+            for i in range(len(max_size)):
+                num_priors_ += 1
+
+        dim = pre_h * pre_w * num_priors_ * 4
+        out = []
+        for h in range(pre_h):
+            for w in range(pre_w):
+                center_x = (w + offsets) * step_w
+                center_y = (h + offsets) * step_h
+                for s in range(len(min_size)):
+                    min_size_ = min_size[s]
+                    box_width = box_height = min_size_
+                    out = self.add_box(out, center_x, center_y, box_width, box_height, img_w, img_h)
+                    if max_size:
+                        assert len(max_size) == len(
+                            min_size
+                        ), "max_size and min_size should be same"
+                        max_size_ = max_size[s]
+                        box_width = box_height = np.sqrt(min_size_ * max_size_)
+                        out = self.add_box(
+                            out, center_x, center_y, box_width, box_height, img_w, img_h
+                        )
+                    for r in range(len(ratios)):
+                        ar = ratios[r]
+                        if ar != 1:
+                            box_width = min_size_ * np.sqrt(ar)
+                            box_height = min_size_ / np.sqrt(ar)
+                            out = self.add_box(
+                                out, center_x, center_y, box_width, box_height, img_w, img_h
+                            )
+        if clip:
+            out = np.clip(out, 0, 1)
+        if len(variance) == 1:
+            variance_ = np.full(dim, variance[0], dtype="float32")
+        else:
+            variance_ = np.tile(variance, (int(dim / 4), 1))
+
+        variance_ = variance_.reshape(-1)
+        out = np.append(out, variance_)
+        out = np.asarray(out, dtype="float32")
+        out = self.exp_tab.new_const(out, dtype="float32")
+        out = _op.reshape(out, (img_n, 2, -1))
+
+        return out
+
+    def flatten(self, op):
+        """ Convert Flatten layer """
+        inputs = op.bottom
+        in_expr = self.exp_tab.get_expr(inputs[0])
+        in_shape = _infer_shape(in_expr)
+
+        flatten_params = op.flatten_param.axis
+        assert flatten_params == 1, "flatten axis should be 1"
+        out = AttrCvt(op_name="batch_flatten")([in_expr], {})
+        return out
+
+    def eltwise(self, op):
         """ Convert Eltwise layer """
         inputs = op.bottom
         assert len(inputs) == 2, "input tensors length should be 2"
@@ -95,18 +366,21 @@ class OperatorConverter(object):
         coeff = list(eltwise_params.coeff)
 
         if eltwise_type_dict[eltwise_type] == "PROD":
-            out = _op.multiply(lhs_expr, rhs_expr)
+            out = AttrCvt(op_name="multiply")([lhs_expr, rhs_expr], {})
         elif eltwise_type_dict[eltwise_type] == "SUM":
             if coeff:
                 left_coeff_expr = self.exp_tab.new_const(np.asarray(coeff[0], np.float32))
                 right_coeff_expr = self.exp_tab.new_const(np.asarray(coeff[1], np.float32))
-                lhs_expr_scale = _op.multiply(lhs_expr, left_coeff_expr)
-                rhs_expr_scale = _op.multiply(rhs_expr, right_coeff_expr)
-                out = _op.add(lhs_expr_scale, rhs_expr_scale)
+                lhs_expr_scale = AttrCvt(op_name="multiply")([lhs_expr, left_coeff_expr], {})
+                rhs_expr_scale = AttrCvt(op_name="multiply")([rhs_expr, right_coeff_expr], {})
+                out = AttrCvt(op_name="add")([lhs_expr_scale, rhs_expr_scale], {})
+
             else:
-                out = _op.add(lhs_expr, rhs_expr)
+                out = AttrCvt(op_name="add")([lhs_expr, rhs_expr], {})
+
         elif eltwise_type_dict[eltwise_type] == "MAX":
-            out = _op.maximum(lhs_expr, rhs_expr)
+            out = AttrCvt(op_name="maximum")([lhs_expr, rhs_expr], {})
+
         else:
             raise tvm.error.OpNotImplemented(
                 "eltwise_type {} is not supported for frontend Caffe.".format(eltwise_type)
@@ -159,20 +433,28 @@ class OperatorConverter(object):
         params["channels"] = conv_params.num_output
         return params
 
-    def convert_batch_norm(self, op):
+    def bn(self, op):
         """ Convert BatchNorm layer """
         inputs = op.bottom
         in_expr = self.exp_tab.get_expr(inputs[0])
-        n, c, h, w = _infer_shape(in_expr)
-
+        shape = _infer_shape(in_expr)
+        if len(shape) == 2:
+            n = c = 1
+            h, w = shape
+        else:
+            n, c, h, w = shape
         if op.name in self.new_bn:
             mean, var, eps, gamma, beta = self.new_bn[op.name]
+            if len(var[var < 0]) > 0:
+                logging.warning("The negative numbers in BN variance are forced to replace 0!")
+                var[var < 0] = 0
             mean_expr = self.exp_tab.new_const(mean, dtype="float32")
             var_expr = self.exp_tab.new_const(var, dtype="float32")
             gamma_expr = self.exp_tab.new_const(gamma, dtype="float32")
             beta_expr = self.exp_tab.new_const(beta, dtype="float32")
-            out = _op.nn.batch_norm(
-                in_expr, gamma_expr, beta_expr, mean_expr, var_expr, epsilon=eps, scale=True
+            out = AttrCvt(op_name="batch_norm")(
+                [in_expr, gamma_expr, beta_expr, mean_expr, var_expr],
+                {"epsilon": eps, "scale": True},
             )
 
         else:
@@ -188,9 +470,8 @@ class OperatorConverter(object):
                 var = np.expand_dims(var, 0).repeat(n, axis=0)
                 var_expr = self.exp_tab.new_const(var, dtype="float32")
 
-                tmp_out = _op.multiply(in_expr, mean_expr)
-                out = _op.add(tmp_out, var_expr)
-
+                tmp_out = AttrCvt(op_name="multiply")([in_expr, mean_expr], {})
+                out = AttrCvt(op_name="add")([tmp_out, var_expr], {})
                 return out
             else:
                 scale = np.asarray(weight_bias_blobs[2].data, np.float32)
@@ -208,13 +489,14 @@ class OperatorConverter(object):
             )
 
             bn_params = op.batch_norm_param.eps
-            out = _op.nn.batch_norm(
-                in_expr, gamma_expr, beta_expr, mean_expr, var_expr, epsilon=bn_params, scale=False
+            out = AttrCvt(op_name="batch_norm")(
+                [in_expr, gamma_expr, beta_expr, mean_expr, var_expr],
+                {"epsilon": bn_params, "scale": False},
             )
 
         return out[0]
 
-    def convert_scale(self, op):
+    def scale(self, op):
         """ Convert Scale layer """
         inputs = op.bottom
         in_expr = self.exp_tab.get_expr(inputs[0])
@@ -234,26 +516,25 @@ class OperatorConverter(object):
                 np.zeros(gamma.shape, dtype=np.float32), dtype="float32"
             )
 
-        _, c, _, _ = _infer_shape(in_expr)
-        gamma_expr = _op.reshape(gamma_expr, newshape=(1, c, 1, 1))
-        beta_expr = _op.reshape(beta_expr, newshape=(1, c, 1, 1))
-        out = _op.multiply(in_expr, gamma_expr)
-        out = _op.add(out, beta_expr)
-
+        n, c, h, w = _infer_shape(in_expr)
+        gamma_expr = AttrCvt(op_name="reshape")([gamma_expr], {"newshape": (1, c, 1, 1)})
+        beta_expr = AttrCvt(op_name="reshape")([beta_expr], {"newshape": (1, c, 1, 1)})
+        out = AttrCvt(op_name="multiply")([in_expr, gamma_expr], {})
+        out = AttrCvt(op_name="add")([out, beta_expr], {})
         return out
 
-    def convert_concat(self, op):
+    def concat(self, op):
         """ Convert Concat layer """
         inputs = op.bottom
         in_expr = (self.exp_tab.get_expr(inputs[i]) for i in range(len(inputs)))
 
-        c_params = dict()
-        c_params["axis"] = op.concat_param.axis
-        out = _op.concatenate(in_expr, axis=c_params["axis"])
+        params = dict()
+        params["axis"] = op.concat_param.axis
+        out = AttrCvt(op_name="concatenate")([in_expr], {"axis": params["axis"]})
 
         return out
 
-    def convert_reshape(self, op):
+    def reshape(self, op):
         """ Convert Reshape layer """
         inputs = op.bottom
         input_name = inputs[0]
@@ -290,10 +571,10 @@ class OperatorConverter(object):
 
         newshape = left_shape + center_shape + right_shape
 
-        out = _op.reshape(in_expr, newshape=newshape)
+        out = AttrCvt(op_name="reshape")([in_expr], {"newshape": newshape})
         return out
 
-    def convert_softmax(self, op):
+    def softmax(self, op):
         """ Convert Softmax layer """
         inputs = op.bottom
         assert len(inputs) == 1, "input tensors length should be 1"
@@ -302,13 +583,13 @@ class OperatorConverter(object):
         in_expr = self.exp_tab.get_expr(input_name)
 
         softmax_param = op.softmax_param
-        parmas = {"axis": softmax_param.axis}
+        params = {"axis": softmax_param.axis}
 
-        out = _op.nn.softmax(in_expr, **parmas)
+        out = AttrCvt(op_name="softmax")([in_expr], params)
 
         return out
 
-    def convert_conv(self, op):
+    def conv(self, op):
         """ Convert Convolution layer """
         params = self._parse_conv_params(op)
         weight_bias_blobs = self.init_layer_dict[op.name].blobs
@@ -331,14 +612,15 @@ class OperatorConverter(object):
 
         weight_expr = self.exp_tab.new_const(weight_value, dtype="float32")
         in_expr = self.exp_tab.get_expr(inputs[0])
-        out = _op.nn.conv2d(data=in_expr, weight=weight_expr, **params)
+        out = AttrCvt(op_name="conv2d")([in_expr, weight_expr], params)
+
         if bias:
             bias_value = np.asarray(bias.data, np.float32)
             bias_expr = self.exp_tab.new_const(bias_value, dtype="float32")
-            out = _op.nn.bias_add(out, bias_expr)
+            out = AttrCvt(op_name="bias_add")([out, bias_expr], {})
         return out
 
-    def convert_pooling(self, op):
+    def pooling(self, op):
         """ Convert Pooling layer """
         inputs = op.bottom
         input_name = inputs[0]
@@ -375,21 +657,22 @@ class OperatorConverter(object):
 
         if pool_type_dict[pool_type] == "MAX":
             if pool_params.global_pooling:
-                out = _op.nn.global_max_pool2d(in_expr)
+                out = AttrCvt(op_name="global_max_pool2d")([in_expr], {})
             else:
                 if len(op.top) == 1:
-                    out = _op.nn.max_pool2d(in_expr, **params)
+                    out = AttrCvt(op_name="max_pool2d")([in_expr], params)
                 elif len(op.top) == 2:
-                    out1 = _op.nn.max_pool2d_with_argmax(in_expr, **params)
-                    out2 = _op.vision.max_pool2d_location(in_expr, **params)
+                    out1 = AttrCvt(op_name="max_pool2d_with_argmax")([in_expr], params)
+                    out2 = AttrCvt(op_name="vision.max_pool2d_location")([in_expr], params)
                     return _expr.Tuple((out1, out2))
 
         elif pool_type_dict[pool_type] == "AVE":  # AVE
             if pool_params.global_pooling:
-                out = _op.nn.global_avg_pool2d(in_expr)
+                out = AttrCvt(op_name="global_avg_pool2d")([in_expr], {})
             else:
                 params["count_include_pad"] = True
-                out = _op.nn.avg_pool2d(in_expr, **params)
+                out = AttrCvt(op_name="avg_pool2d")([in_expr], params)
+
         else:
             raise tvm.error.OpNotImplemented(
                 "Operator {} is not supported for frontend Caffe.".format(
@@ -399,7 +682,7 @@ class OperatorConverter(object):
 
         return out
 
-    def convert_lrn(self, op):
+    def lrn(self, op):
         """ Convert LRN layer """
         inputs = op.bottom
         input_name = inputs[0]
@@ -412,10 +695,11 @@ class OperatorConverter(object):
         params["beta"] = lrn_params.beta
 
         in_expr = self.exp_tab.get_expr(input_name)
-        out = _op.nn.lrn(in_expr, **params)
+        out = AttrCvt(op_name="lrn")([in_expr], params)
+
         return out
 
-    def convert_innerproduct(self, op):
+    def innerproduct(self, op):
         """ Convert InnerProduct layer """
         inputs = op.bottom
         weight_bias_blobs = self.init_layer_dict[op.name].blobs
@@ -446,17 +730,19 @@ class OperatorConverter(object):
         weight_expr = self.exp_tab.new_const(weight_value, dtype="float32")
 
         in_expr = self.exp_tab.get_expr(inputs[0])
-        in_reshape = _op.reshape(data=in_expr, newshape=(-1, weight_shape[-1]))
+        in_reshape = AttrCvt(op_name="reshape")([in_expr], {"newshape": (-1, weight_shape[-1])})
 
-        out = _op.nn.dense(data=in_reshape, weight=weight_expr)
+        out = AttrCvt(op_name="dense", extras={"units": params["num_output"]})(
+            [in_reshape, weight_expr], {}
+        )
 
         if bias:
             bias_value = np.asarray(bias.data, np.float32)
             bias_expr = self.exp_tab.new_const(bias_value, dtype="float32")
-            out = _op.nn.bias_add(out, bias_expr, axis=params["axis"])
+            out = AttrCvt(op_name="bias_add")([out, bias_expr], {"axis": params["axis"]})
         return out
 
-    def convert_dropout(self, op):
+    def dropout(self, op):
         """ Convert Dropout layer """
         inputs = op.bottom
         input_name = inputs[0]
@@ -467,22 +753,24 @@ class OperatorConverter(object):
         params["rate"] = dropout_params.dropout_ratio
 
         in_expr = self.exp_tab.get_expr(input_name)
-        out = _op.nn.dropout(in_expr, **params)
+        out = AttrCvt(op_name="dropout")([in_expr], params)
         return out
 
-    def convert_relu(self, op):
+    def relu(self, op):
         """ Convert ReLU layer """
         inputs = op.bottom
         in_expr = self.exp_tab.get_expr(inputs[0])
         negative_slope = op.relu_param.negative_slope
         if negative_slope:
-            out = _op.nn.leaky_relu(in_expr, negative_slope)
+            out = AttrCvt(op_name="leaky_relu")([in_expr], {"alpha": negative_slope})
+
             return out
 
-        out = _op.nn.relu(in_expr)
+        out = AttrCvt(op_name="relu")([in_expr], {})
+
         return out
 
-    def convert_prelu(self, op):
+    def prelu(self, op):
         """ Convert PReLU layer """
         inputs = op.bottom
         in_expr = self.exp_tab.get_expr(inputs[0])
@@ -491,16 +779,16 @@ class OperatorConverter(object):
         alpha = np.asarray(alpha, np.float32)
         alpha = self.exp_tab.new_const(alpha, dtype="float32")
         axis = 1
-        out = _op.nn.prelu(in_expr, alpha, axis=axis)
+        out = AttrCvt(op_name="prelu")([in_expr, alpha], {"axis": axis})
         return out
 
-    def convert_deconv(self, op):
+    def deconv(self, op):
         """ Convert Deconvolution layer """
         params = self._parse_conv_params(op)
         weight_bias_blobs = self.init_layer_dict[op.name].blobs
-        conv_params = op.convolution_param
         inputs = op.bottom
-
+        in_expr = self.exp_tab.get_expr(inputs[0])
+        in_shape = _infer_shape(in_expr)
         # process weight and bias blobs
         weight, bias = None, None
         if len(weight_bias_blobs) > 1:
@@ -510,23 +798,24 @@ class OperatorConverter(object):
             weight = weight_bias_blobs[0]
         if weight:
             kh, kw = params["kernel_size"]
-            weight_shape = [-1, conv_params.num_output, kh, kw]
+            channel = params["channels"] // params["groups"]
+            weight_shape = [in_shape[1], channel, kh, kw]
             weight_value = np.asarray(weight.data, np.float32)
             weight_value = np.reshape(weight_value, weight_shape)
         else:
             raise Exception("No weight value of layer {} in caffemodel".format(op.name))
 
         weight_expr = self.exp_tab.new_const(weight_value, dtype="float32")
-        in_expr = self.exp_tab.get_expr(inputs[0])
-        out = _op.nn.conv2d_transpose(data=in_expr, weight=weight_expr, **params)
+        out = AttrCvt(op_name="conv2d_transpose")([in_expr, weight_expr], params)
+
         if bias:
 
             bias_value = np.asarray(bias.data, np.float32)
             bias_expr = self.exp_tab.new_const(bias_value, dtype="float32")
-            out = _op.nn.bias_add(out, bias_expr)
+            out = AttrCvt(op_name="bias_add")([out, bias_expr], {})
         return out
 
-    def convert_slice(self, op):
+    def _slice(self, op):
         """ Convert Slice layer """
         inputs = op.bottom
         in_expr = self.exp_tab.get_expr(inputs[0])
@@ -541,24 +830,26 @@ class OperatorConverter(object):
         else:
             indices_or_sections = sorted(indices_or_sections)
 
-        out = _op.split(in_expr, indices_or_sections=indices_or_sections, axis=axis)
+        out = AttrCvt(op_name="split")(
+            [in_expr], {"indices_or_sections": indices_or_sections, "axis": axis}
+        )
         return out
 
-    def convert_sigmoid(self, op):
+    def sigmoid(self, op):
         """ Convert Sigmoid layer """
         inputs = op.bottom
         in_expr = self.exp_tab.get_expr(inputs[0])
-        out = _op.sigmoid(in_expr)
+        out = AttrCvt(op_name="sigmoid")([in_expr], {})
         return out
 
-    def convert_tanh(self, op):
+    def tanh(self, op):
         """ Convert TanH layer """
         inputs = op.bottom
         in_expr = self.exp_tab.get_expr(inputs[0])
-        out = _op.tanh(in_expr)
+        out = AttrCvt(op_name="tanh")([in_expr], {})
         return out
 
-    def convert_crop(self, op):
+    def crop(self, op):
         """ Convert Crop layer """
         inputs = op.bottom
         assert len(inputs) == 2, "Need two inputs of Crop layer"
@@ -572,6 +863,9 @@ class OperatorConverter(object):
 
         # expand offset to (offset1, offset2, ...)
         in_a_shape = _infer_shape(in_expr_a)
+        in_b_shape = _infer_shape(in_expr_b)
+        if in_a_shape == in_b_shape:
+            return in_expr_a
         num_to_crop = len(in_a_shape) - axis
         if not offset:
             offset = [0] * num_to_crop
@@ -580,21 +874,78 @@ class OperatorConverter(object):
         elif len(offset) != num_to_crop:
             raise Exception("No matching the number between axis and offset!")
 
-        slice_end = in_a_shape
+        slice_end = list(in_a_shape)
         slice_start = [0] * len(in_a_shape)
         for i in range(num_to_crop):
             slice_start[i + axis] = offset[i]
+            slice_end[i + axis] = offset[i] + in_b_shape[i + axis]
 
         to_crop_axis = list(range(len(in_a_shape)))
         to_crop_axis = to_crop_axis[axis:]
 
         # secondly, crop in_expr_a by in_expr_b
-        in_expr_a_stride = _op.strided_slice(in_expr_a, slice_start, slice_end)
-        out = _op.slice_like(in_expr_a_stride, in_expr_b, axes=to_crop_axis)
+        out = AttrCvt(op_name="strided_slice")(
+            [in_expr_a], {"begin": slice_start, "end": slice_end}
+        )
+        return out
+
+    def proposal(self, op):
+        """ Convert proposal layer"""
+        inputs = op.bottom
+        assert len(inputs) == 2, "Need two inputs of proposal layer"
+        rpn_cls_prob_expr = self.exp_tab.get_expr(inputs[0])
+        rpn_bbox_pred = self.exp_tab.get_expr(inputs[1])
+
+        model_input = self.predict_layer[0].top[0]
+        n, c, h, w = _infer_shape(self.exp_tab.get_expr(model_input))
+        im_info = np.array([h, w, 1], dtype=np.float32)
+        im_info = np.tile(im_info, (n, 1))
+        im_info_expr = self.exp_tab.new_const(im_info, dtype="float32")
+
+        proposal_params = op.proposal_param
+        params = dict()
+        if hasattr(proposal_params, "scale") and len(proposal_params.scale) > 0:
+            params["scales"] = list(float(s) for s in proposal_params.scale)
+        if hasattr(proposal_params, "ratio") and len(proposal_params.ratio) > 0:
+            params["ratios"] = list(float(r) for r in proposal_params.ratio)
+        if hasattr(proposal_params, "base_size"):
+            pass
+        if hasattr(proposal_params, "feat_stride"):
+            params["feature_stride"] = int(proposal_params.feat_stride)
+        if hasattr(proposal_params, "pre_nms_topn"):
+            params["rpn_pre_nms_top_n"] = int(proposal_params.pre_nms_topn)
+        if hasattr(proposal_params, "post_nms_topn"):
+            params["rpn_post_nms_top_n"] = int(proposal_params.post_nms_topn)
+        if hasattr(proposal_params, "nms_thresh"):
+            params["threshold"] = float(proposal_params.nms_thresh)
+        if hasattr(proposal_params, "min_size"):
+            params["rpn_min_size"] = int(proposal_params.min_size)
+        params["iou_loss"] = False
+
+        out = AttrCvt(op_name="vision.proposal")(
+            [rpn_cls_prob_expr, rpn_bbox_pred, im_info_expr], params
+        )
+        return out
+        # out_score = AttrCvt(op_name="zeros")([], {"shape": (n, 1), "dtype": "float32"})
+        # return out, out_score
+
+    def roipooling(self, op):
+        """ Convert ROIPooling layer """
+        inputs = op.bottom
+        conv_feature_expr = self.exp_tab.get_expr(inputs[0])
+        proposal_expr = self.exp_tab.get_expr(inputs[1])
+
+        roipooling_params = op.roi_pooling_param
+        params = dict()
+        params["pooled_size"] = (int(roipooling_params.pooled_h), int(roipooling_params.pooled_w))
+        params["spatial_scale"] = float(roipooling_params.spatial_scale)
+
+        out = AttrCvt(op_name="vision.roi_pool")([conv_feature_expr, proposal_expr], params)
         return out
 
     def check_unsupported_ops(self):
         """Check unsupported Caffe ops in our converter."""
+        logging.debug("check unsupported ops")
         unsupported_ops_set = set()
 
         include_layer = dict()
@@ -603,6 +954,7 @@ class OperatorConverter(object):
                 include_layer[pl.type] = 1
             else:
                 include_layer[pl.type] = include_layer[pl.type] + 1
+        logging.debug("include layers: {}".format(include_layer.items()))
 
         for pl in self.predict_layer:
             op_name = pl.type
@@ -642,6 +994,7 @@ class OperatorConverter(object):
 
     def op_fuse(self):
         """fuse bn and scale """
+        logging.debug("Caffe:fuse bn and scale")
         new_layers = []
         temp_layers = {}
         changed_layers = {}
@@ -672,8 +1025,10 @@ class OperatorConverter(object):
             if len(temp_layers) == 2:
                 layer = self.fuse_op(temp_layers)
                 new_layers.append(layer)
-                changed_layers[temp_layers["scale"].name] = temp_layers["bn"].name
-
+                if len(temp_layers["bn"].top) == 1:
+                    changed_layers[temp_layers["scale"].name] = temp_layers["bn"].top[0]
+                else:
+                    changed_layers[temp_layers["scale"].name] = temp_layers["bn"].name
             for idx, plt in enumerate(pl.bottom):
                 if plt in changed_layers:
                     pl.bottom[idx] = changed_layers[plt]
@@ -686,6 +1041,8 @@ class OperatorConverter(object):
 
     def convert_op_to_relay(self):
         """Convert Caffe ops to relay ops"""
+        logging.debug("convert op to relay")
+
         for pl in self.predict_layer:
             op_type = pl.type
             if op_type == "Input":
@@ -696,9 +1053,19 @@ class OperatorConverter(object):
 
             if len(output_tensors) == 1:
                 self.exp_tab.set_expr(output_tensors[0], ret)
+                logging.debug(
+                    "layer_name:{}, type:{}, output_name:{}, shape:{}".format(
+                        pl.name, pl.type, output_tensors[0], _infer_shape(ret)
+                    )
+                )
             else:
                 for idx, output_tensor in enumerate(output_tensors):
                     self.exp_tab.set_expr(output_tensor, ret[idx])
+                    logging.debug(
+                        "layer_name:{}, type:{}, output_name:{}, shape:{}".format(
+                            pl.name, pl.type, output_tensor, _infer_shape(ret[idx])
+                        )
+                    )
 
 
 def _rebuild_layers(predict_layer):
@@ -707,6 +1074,8 @@ def _rebuild_layers(predict_layer):
     """
     # dict of input name that will be changed to new name
     changed_top_dict = dict()
+
+    top_change_before_dict = dict()
 
     for pl in predict_layer:
         if pl.type == "Input":
@@ -720,6 +1089,7 @@ def _rebuild_layers(predict_layer):
                     pl.bottom[0] = changed_top_dict[pl.bottom[0]]
                 # update "change" dict
                 changed_top_dict[pl.top[0]] = pl.name
+                top_change_before_dict[pl.name] = pl.top[0]
                 # change current layer's output to its name
                 pl.top[0] = pl.name
             else:
@@ -730,6 +1100,7 @@ def _rebuild_layers(predict_layer):
             for index, plt in enumerate(pl.bottom):
                 if plt in changed_top_dict:
                     pl.bottom[index] = changed_top_dict[plt]
+    return top_change_before_dict
 
 
 def _get_inputs_outputs(predict_layer):
@@ -777,6 +1148,8 @@ def from_caffe(init_net, predict_net, shape_dict, dtype_dict):
     params : dict of str to tvm.NDArray
         The parameter dict to be used by relay
     """
+    logging.debug("caffe frontend")
+
     old_caffe = False
     if len(predict_net.input) != 0:  # old caffe version
         old_caffe = True
@@ -785,23 +1158,29 @@ def from_caffe(init_net, predict_net, shape_dict, dtype_dict):
     predict_layer = predict_net.layer
 
     # replace layer's top with its name and update other layers'bottoms
-    _rebuild_layers(predict_layer)
+    top_change_before_dict = _rebuild_layers(predict_layer)
+
     # obtain inputs and outputs of Net
     if old_caffe:
         _, model_outputs = _get_inputs_outputs(predict_layer)
     else:
         model_inputs, model_outputs = _get_inputs_outputs(predict_layer)
 
+    logging.debug("model_inputs:%s", ",".join(model_inputs))
+    logging.debug("model_outputs:%s", ",".join(model_outputs))
+
     exp_tab = ExprTable()
     for in_name in model_inputs:
         shape = shape_dict[in_name] if in_name in shape_dict else None
         dtype = dtype_dict[in_name] if in_name in dtype_dict else "float32"
         exp_tab.set_expr(in_name, _expr.var(in_name, shape=shape, dtype=dtype))
+
     if list(init_net.layer):
         init_layer = init_net.layer
     else:
         init_layer = init_net.layers
     init_layer_dict = {il.name: il for il in init_layer}
+    predict_layer_dict = {pl.name: pl for pl in predict_layer}
     # op code in model
     op_converter = OperatorConverter(init_layer_dict, predict_layer, exp_tab)
     op_converter.check_unsupported_ops()
@@ -819,4 +1198,12 @@ def from_caffe(init_net, predict_net, shape_dict, dtype_dict):
     func = _function.Function(analysis.free_vars(outputs), outputs)
     mod = IRModule.from_expr(func)
 
-    return mod, params
+    # return mod, params
+    new_outputs = list()
+    for i in model_outputs:
+        if i in top_change_before_dict:
+            tmp = top_change_before_dict[i]
+        else:
+            tmp = i
+        new_outputs.append(tmp)
+    return mod, params, new_outputs

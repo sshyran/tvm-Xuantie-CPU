@@ -20,6 +20,22 @@ from tvm import te
 from ..util import traverse_inline
 from .. import nn
 from .conv2d import conv2d_nchw, schedule_conv2d_nchw
+from .depthwise_conv2d import depthwise_conv2d_nchw, schedule_depthwise_conv2d_nchw
+
+
+def depthwise_conv2d_transpose_nchw(data, kernel, strides, padding, out_dtype, output_padding):
+    data_pad, kernel_transform = nn.depthwise_conv2d_transpose_nchw_preprocess(
+        data, kernel, strides, padding, out_dtype, output_padding
+    )
+    # reuse depthwise_conv2d_nchw implementation
+    return depthwise_conv2d_nchw(
+        data_pad,
+        kernel_transform,
+        strides=(1, 1),
+        padding=(0, 0),
+        dilation=(1, 1),
+        out_dtype=out_dtype,
+    )
 
 
 def conv2d_transpose_nchw(data, kernel, strides, padding, out_dtype, output_padding):
@@ -57,6 +73,28 @@ def schedule_conv2d_transpose_nchw(outs):
             if isinstance(kernel_vec, te.ComputeOp):
                 kernel_transform = kernel_vec.op.input_tensors[0]
                 s[kernel_transform].compute_inline()
+
+    traverse_inline(s, outs[0].op, _callback)
+    return s
+
+
+def schedule_depthwise_conv2d_transpose_nchw(outs):
+    """Create schedule for tensors"""
+    outs = [outs] if isinstance(outs, te.tensor.Tensor) else outs
+    s = schedule_depthwise_conv2d_nchw(outs)
+
+    def _callback(op):
+        if "unpack_nchwc" in op.tag:
+            conv_out = op.input_tensors[0]
+            # retrieve data
+            data_vec = conv_out.op.input_tensors[0]
+            data_pad = data_vec.op.input_tensors[0]
+            data_dilate = data_pad.op.input_tensors[0]
+            s[data_dilate].compute_inline()
+            s[data_pad].compute_inline()
+            # retrieve kernel
+            kernel_transform = conv_out.op.input_tensors[1]
+            s[kernel_transform].compute_inline()
 
     traverse_inline(s, outs[0].op, _callback)
     return s

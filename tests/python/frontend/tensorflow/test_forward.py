@@ -14,7 +14,8 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-# pylint: disable=import-self, invalid-name, unused-argument
+# pylint: disable=import-self, invalid-name
+# pylint: disable=too-many-lines, missing-function-docstring
 """
 Tensorflow testcases
 ====================
@@ -29,6 +30,7 @@ try:
     import tensorflow.compat.v1 as tf
 except ImportError:
     import tensorflow as tf
+from tensorflow import contrib
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import graph_util
 from tensorflow.python.ops import nn_ops
@@ -42,13 +44,16 @@ from tensorflow.python.framework import function
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import dtypes
 from tensorflow.python.ops import gen_functional_ops
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import PReLU, ThresholdedReLU
 from distutils.version import LooseVersion
 import tvm
 from tvm import te
 from tvm import relay
 import tvm.relay.testing.tf as tf_testing
 from tvm.runtime.vm import VirtualMachine
-from packaging import version as package_version
+
+# from packaging import version as package_version
 
 import tvm.testing
 
@@ -407,7 +412,86 @@ def test_forward_pooling():
 
 
 #######################################################################
-# Convolution
+# Atrous Conv2d
+# -----------
+
+
+def _test_atrous_conv2d(tensor_in_sizes, filter_in_sizes, rate, padding):
+    """ One iteration of convolution with given shapes and attributes """
+
+    total_size_1 = np.prod(tensor_in_sizes)
+    total_size_2 = np.prod(filter_in_sizes)
+    # Initializes the input tensor with array containing incrementing
+    # numbers from 1.
+    data_array = [f * 1.0 for f in range(1, total_size_1 + 1)]
+    filter_array = [f * 1.0 for f in range(1, total_size_2 + 1)]
+
+    with tf.Graph().as_default():
+        in_data = array_ops.placeholder(shape=tensor_in_sizes, dtype="float32")
+        in_filter = constant_op.constant(filter_array, shape=filter_in_sizes, dtype="float32")
+
+        nn_ops.atrous_conv2d(in_data, in_filter, rate=rate, padding=padding, name="AtrousConv2d")
+
+        compare_tf_with_tvm(
+            np.reshape(data_array, tensor_in_sizes).astype("float32"),
+            "Placeholder:0",
+            "AtrousConv2d:0",
+        )
+
+
+def test_forward_atrous_conv2d():
+
+    _test_atrous_conv2d([4, 8, 8, 176], [1, 1, 176, 32], 1, "SAME")
+    _test_atrous_conv2d([4, 17, 17, 19], [3, 3, 19, 19], 2, "VALID")
+    _test_atrous_conv2d([4, 17, 17, 124], [1, 1, 124, 19], 1, "SAME")
+    _test_atrous_conv2d([4, 17, 17, 12], [3, 3, 12, 32], 2, "VALID")
+
+
+#######################################################################
+# Convolution 1D
+# -----------
+
+
+def _test_convolution1d(tensor_in_sizes, filter_in_sizes, stride, padding, data_format):
+    """ One iteration of convolution_1d with given shapes and attributes """
+
+    total_size_1 = np.prod(tensor_in_sizes)
+    total_size_2 = np.prod(filter_in_sizes)
+    # Initializes the input tensor with array containing incrementing
+    # numbers from 1.
+    data_array = [f * 1.0 for f in range(1, total_size_1 + 1)]
+    filter_array = [f * 1.0 for f in range(1, total_size_2 + 1)]
+
+    with tf.Graph().as_default():
+        in_data = array_ops.placeholder(shape=tensor_in_sizes, dtype="float32")
+        in_filter = constant_op.constant(filter_array, shape=filter_in_sizes, dtype="float32")
+
+        nn_ops.conv1d(
+            in_data,
+            in_filter,
+            stride=stride,
+            padding=padding,
+            data_format=data_format,
+            name="Conv1D",
+        )
+
+        compare_tf_with_tvm(
+            np.reshape(data_array, tensor_in_sizes).astype("float32"),
+            "Placeholder:0",
+            "Conv1D/Squeeze:0",
+        )
+
+
+def test_forward_convolution1d():
+
+    _test_convolution1d([4, 8, 176], [1, 176, 32], 1, "SAME", "NHWC")
+    _test_convolution1d([4, 17, 19], [3, 19, 19], 2, "VALID", "NHWC")
+    _test_convolution1d([4, 17, 124], [1, 124, 19], 1, "SAME", "NHWC")
+    _test_convolution1d([4, 17, 12], [3, 12, 32], 2, "VALID", "NHWC")
+
+
+#######################################################################
+# Convolution 2D
 # -----------
 
 
@@ -1285,6 +1369,7 @@ def test_tensor_array_write_read():
             in_data = [np_data, np_data]
             t1 = tf.constant(np_data, dtype=dtype)
             t2 = tf.constant(np_data, dtype=dtype)
+
             ta1 = tf.TensorArray(
                 dtype=dtype, size=2, infer_shape=infer_shape, element_shape=element_shape
             )
@@ -1671,6 +1756,20 @@ def test_forward_batch_matmul():
 
 
 #######################################################################
+# Hard_sigmoid
+# ----------------------------------
+
+
+def test_forward_hard_sigmoid():
+    inp_array = np.random.uniform(size=[1, 10, 10, 3]).astype(np.float32)
+    with tf.Graph().as_default():
+        in_data = tf.placeholder(shape=inp_array.shape, dtype=inp_array.dtype, name="in_data")
+        tf.keras.backend.hard_sigmoid(in_data)
+
+        compare_tf_with_tvm(inp_array, "in_data:0", "clip_by_value:0")
+
+
+#######################################################################
 # StridedSlice
 # ------------
 
@@ -1973,7 +2072,6 @@ def test_forward_bias_add():
 
 def _test_split(in_shape, axis, num_or_size_splits, dtype):
     np_data = np.random.uniform(-5, 5, size=in_shape).astype(dtype)
-
     """ One iteration of a Split """
     tf.reset_default_graph()
     with tf.Graph().as_default():
@@ -2118,6 +2216,21 @@ def test_forward_clip_by_value():
         _test_forward_clip_by_value((4, 4), 1, 5, "int32")
 
 
+def _test_forward_clip(ip_shape, clip_value_min, clip_value_max, dtype):
+    tf.reset_default_graph()
+    with tf.Graph().as_default():
+        in_data = tf.placeholder(dtype, ip_shape, name="in_data")
+        tf.keras.backend.clip(in_data, clip_value_min, clip_value_max)
+        np_data = np.random.uniform(-100, 100, size=ip_shape).astype(dtype)
+        compare_tf_with_tvm([np_data], ["in_data:0"], "clip_by_value:0")
+
+
+def test_forward_clip():
+    """test Clip op"""
+    _test_forward_clip((4,), 0.1, 5.0, "float32")
+    _test_forward_clip((4, 4), 1, 5, "int32")
+
+
 #######################################################################
 # Multi Input to graph
 # --------------------
@@ -2239,6 +2352,22 @@ def _test_resize_nearest_neighbor_dynamic_shape(in_shape, scale):
         tf.image.resize_nearest_neighbor(in_data, new_shape, name="resize_nearest_neighbor")
 
         compare_tf_with_tvm(data, "Placeholder:0", "resize_nearest_neighbor:0")
+
+
+def _test_resize_bicubic(in_shape, to_shape, align_corners):
+    """ One iteration of resize bicubic """
+
+    data = np.random.uniform(high=100, size=in_shape).astype("float32")
+    shape_data = np.array(to_shape).astype("int32")
+
+    with tf.Graph().as_default():
+        in_data = array_ops.placeholder(shape=data.shape, dtype=data.dtype)
+        shape_data = constant_op.constant(
+            shape_data, shape=shape_data.shape, dtype=shape_data.dtype
+        )
+        out = tf.image.resize_bicubic(in_data, shape_data, align_corners=align_corners)
+
+        compare_tf_with_tvm(data, "Placeholder:0", out.name)
 
 
 def test_forward_resize():
@@ -2566,9 +2695,9 @@ def _test_lstm_cell(batch_size, num_hidden, num_layers, forget_bias, dtype):
 
 def test_forward_lstm():
     """test LSTM block cell"""
-    if package_version.parse(tf.VERSION) < package_version.parse("2.0.0"):
-        # in 2.0, tf.contrib.rnn.LSTMBlockCell is removed
-        _test_lstm_cell(1, 2, 1, 0.5, "float32")
+    #    if package_version.parse(tf.VERSION) < package_version.parse("2.0.0"):
+    # in 2.0, tf.contrib.rnn.LSTMBlockCell is removed
+    _test_lstm_cell(1, 2, 1, 0.5, "float32")
 
 
 #######################################################################
@@ -3118,6 +3247,31 @@ def test_forward_l2_normalize():
 
 
 #######################################################################
+# Batch_normal
+# ------------
+
+
+def _test_batch_normal(ishape, eps):
+    """ testing batch_normal (uses max, sum, square, sqrt frontend operators)"""
+
+    inp_array = np.random.uniform(size=ishape).astype(np.float32)
+    channel = ishape[-1]
+    with tf.Graph().as_default():
+        in_data = tf.placeholder(shape=inp_array.shape, dtype=inp_array.dtype, name="in_data")
+        scale = tf.constant(np.random.rand(channel).astype(np.float32))
+        offset = tf.constant(np.random.rand(channel).astype(np.float32))
+        nn.fused_batch_norm(
+            in_data, scale=scale, offset=offset, epsilon=eps, name="fuseed_batch_normal"
+        )
+
+        compare_tf_with_tvm(inp_array, "in_data:0", "fuseed_batch_normal:0")
+
+
+def test_forward_batch_normal():
+    _test_batch_normal((1, 20, 20, 3), 0.001)
+
+
+#######################################################################
 # transpose
 # ---------
 
@@ -3208,6 +3362,16 @@ def test_forward_relu():
             compare_tf_with_tvm(inp_array, "Placeholder:0", "Relu:0", mode=mode)
 
 
+def test_forward_relu6():
+    ishape = (1, 3, 10, 10)
+    inp_array = np.random.uniform(-5, 5, size=ishape).astype(np.float32)
+    for mode in ["graph_runtime", "vm"]:
+        with tf.Graph().as_default():
+            in1 = tf.placeholder(shape=inp_array.shape, dtype=inp_array.dtype)
+            tf.nn.relu6(in1)
+            compare_tf_with_tvm(inp_array, "Placeholder:0", "Relu6:0", mode=mode)
+
+
 def test_forward_leaky_relu():
     ishape = (1, 3, 10, 10)
     inp_array = np.random.uniform(-5, 5, size=ishape).astype(np.float32)
@@ -3245,8 +3409,30 @@ def test_forward_tanh():
         compare_tf_with_tvm(inp_array, "Placeholder:0", "Tanh:0")
 
 
+def test_forward_prelu():
+    ishape = (1, 3, 10, 10)
+    inp_array = np.random.uniform(-5, 5, size=ishape).astype(np.float32)
+    with tf.Graph().as_default():
+        in1 = tf.placeholder(shape=inp_array.shape, dtype=inp_array.dtype, name="input_data")
+        model = Sequential()
+        model.add(PReLU(input_shape=ishape[1:], name="prelu"))
+        result = model(in1)
+        compare_tf_with_tvm(inp_array, "input_data:0", result.name, True)
+
+
+def test_forward_thresholdedReLU():
+    ishape = (1, 3, 10, 10)
+    inp_array = np.random.uniform(-5, 5, size=ishape).astype(np.float32)
+    with tf.Graph().as_default():
+        in1 = tf.placeholder(shape=inp_array.shape, dtype=inp_array.dtype, name="input_data")
+        model = Sequential()
+        model.add(ThresholdedReLU(input_shape=ishape[1:], theta=0.1, name="thresholdedReLU"))
+        result = model(in1)
+        compare_tf_with_tvm(inp_array, "input_data:0", result.name, True)
+
+
 #######################################################################
-# Softmax
+# Softmax, Softsign
 # -------
 def test_forward_softmax():
     """test operator Softmax """
@@ -3261,6 +3447,21 @@ def test_forward_softmax():
 
     check_softmax((2, 3, 5), 2, "float32")
     check_softmax((2, 3, 5), -1, "float32")
+
+
+def test_forward_softsign():
+    """test operator softsign """
+
+    def check_softsign(in_shape, dtype):
+        np_data = np.random.uniform(-100, 100, size=in_shape).astype(dtype)
+        tf.reset_default_graph()
+        with tf.Graph().as_default():
+            in_data = tf.placeholder(dtype, in_shape, name="in_data")
+            tf.nn.softsign(in_data, name="softsign")
+            compare_tf_with_tvm([np_data], ["in_data:0"], "softsign:0")
+
+    check_softsign((2, 3, 5), "float32")
+    check_softsign((2, 3, 5), "float32")
 
 
 #######################################################################
@@ -3396,6 +3597,350 @@ def test_forward_unary():
     _test_forward_unary(tf.log1p)
 
 
+def test_forward_cumprod():
+    """test Cumprod"""
+
+    def _test_forward_cumprod(exclusive, reverse):
+        """test Cumprod"""
+        np_data = np.random.uniform(-10, 10, size=(1, 10)).astype(np.float32)
+        tf.reset_default_graph()
+        with tf.Graph().as_default():
+            in_data = tf.placeholder(tf.float32, (1, 10), name="in_data")
+            tf.cumprod(in_data, name="cumprod")
+            compare_tf_with_tvm([np_data], ["in_data:0"], "cumprod:0")
+
+    _test_forward_cumprod(False, False)
+    _test_forward_cumprod(False, True)
+    _test_forward_cumprod(True, False)
+    _test_forward_cumprod(True, True)
+
+
+def test_forward_cumsum():
+    """test Cumsum"""
+
+    def _test_forward_cumsum(exclusive, reverse):
+        """test Cumsum"""
+        np_data = np.random.uniform(-10, 10, size=(1, 10)).astype(np.float32)
+        tf.reset_default_graph()
+        with tf.Graph().as_default():
+            in_data = tf.placeholder(tf.float32, (1, 10), name="in_data")
+            tf.cumsum(in_data, name="cumsum")
+            compare_tf_with_tvm([np_data], ["in_data:0"], "cumsum:0")
+
+    _test_forward_cumsum(False, False)
+    _test_forward_cumsum(False, True)
+    _test_forward_cumsum(True, False)
+    _test_forward_cumsum(True, True)
+
+
+def test_forward_quantize():
+    """test quantize"""
+
+    def _test_forward_quantize(dtype, min_range, max_range, mode):
+        if dtype == "qint8":
+            t_type = tf.qint8
+        elif dtype == "quint8":
+            t_type = tf.quint8
+        elif dtype == "qint16":
+            t_type = tf.qint16
+        elif dtype == "quint16":
+            t_type = tf.quint16
+        elif dtype == "qint32":
+            t_type = tf.qint32
+        np_data = np.random.uniform(min_range, max_range, size=(1, 3, 224, 224)).astype(np.float32)
+        tf.reset_default_graph()
+        with tf.Graph().as_default():
+            in_data = tf.placeholder(tf.float32, (1, 3, 224, 224), name="in_data")
+            tf.quantize(in_data, min_range, max_range, t_type, mode, name="quantize")
+            compare_tf_with_tvm([np_data], ["in_data:0"], "quantize:0")
+
+    _test_forward_quantize("qint8", -1000, 1000, "MIN_COMBINED")
+    _test_forward_quantize("qint8", -1000, 1000, "MIN_FIRST")
+    _test_forward_quantize("qint8", -1000, 1000, "SCALED")
+
+    _test_forward_quantize("quint8", 0, 255, "MIN_COMBINED")
+    _test_forward_quantize("quint8", 0, 255, "MIN_FIRST")
+    _test_forward_quantize("quint8", 0, 127, "SCALED")
+
+    _test_forward_quantize("qint16", -1000, 1000, "MIN_COMBINED")
+    _test_forward_quantize("qint16", -1000, 1000, "MIN_FIRST")
+    _test_forward_quantize("qint16", -1000, 1000, "SCALED")
+
+    _test_forward_quantize("quint16", 0, 1000, "MIN_COMBINED")
+    _test_forward_quantize("quint16", 0, 1000, "MIN_FIRST")
+    _test_forward_quantize("quint16", 0, 1000, "SCALED")
+
+    _test_forward_quantize("qint32", -1000, 1000, "MIN_COMBINED")
+    _test_forward_quantize("qint32", -1000, 1000, "MIN_FIRST")
+    _test_forward_quantize("qint32", -1000, 1000, "SCALED")
+
+
+def test_forward_dequantize():
+    """test Dequantize"""
+
+    def _test_forward_dequantize(dtype, min_range, max_range, mode):
+        if dtype == "qint8":
+            t_type = tf.qint8
+        elif dtype == "quint8":
+            t_type = tf.quint8
+        elif dtype == "qint16":
+            t_type = tf.qint16
+        elif dtype == "quint16":
+            t_type = tf.quint16
+        elif dtype == "qint32":
+            t_type = tf.qint32
+        np_data = np.random.uniform(min_range, max_range, size=(1, 3, 224, 224)).astype(np.float32)
+        tf.reset_default_graph()
+        with tf.Graph().as_default():
+            in_data = tf.placeholder(tf.float32, (1, 3, 224, 224), name="in_data")
+            quant_data = tf.quantize(in_data, min_range, max_range, t_type, mode)
+            tf.dequantize(quant_data[0], min_range, max_range, mode, name="dequantize")
+            compare_tf_with_tvm([np_data], ["in_data:0"], "dequantize:0")
+
+    _test_forward_dequantize("qint8", -1000, 1000, "MIN_COMBINED")
+    _test_forward_dequantize("qint8", -1000, 1000, "MIN_FIRST")
+    _test_forward_dequantize("qint8", -1000, 1000, "SCALED")
+
+    _test_forward_dequantize("quint8", 0, 1000, "MIN_COMBINED")
+    _test_forward_dequantize("quint8", 0, 1000, "MIN_FIRST")
+    _test_forward_dequantize("quint8", 0, 1000, "SCALED")
+
+    _test_forward_dequantize("qint16", -1000, 1000, "MIN_COMBINED")
+    _test_forward_dequantize("qint16", -1000, 1000, "MIN_FIRST")
+    _test_forward_dequantize("qint16", -1000, 1000, "SCALED")
+
+    _test_forward_dequantize("qint32", -1000, 1000, "MIN_COMBINED")
+    _test_forward_dequantize("qint32", -1000, 1000, "MIN_FIRST")
+    _test_forward_dequantize("qint32", -1000, 1000, "SCALED")
+
+
+def test_forward_expm1():
+    np_data = np.random.uniform(1, 100, size=(1, 3, 224, 224)).astype(np.float32)
+    tf.reset_default_graph()
+    in_data = tf.placeholder(tf.float32, (1, 3, 224, 224), name="in_data")
+    tf.expm1(in_data, name="expm1")
+    compare_tf_with_tvm([np_data], ["in_data:0"], "expm1:0")
+
+
+def test_forwars_identity():
+    np_data = np.random.uniform(1, 100, size=(1, 3, 224, 224)).astype(np.float32)
+    tf.reset_default_graph()
+    in_data = tf.placeholder(tf.float32, (1, 3, 224, 224), name="in_data")
+    tf.identity(in_data, name="identity")
+    compare_tf_with_tvm([np_data], ["in_data:0"], "identity:0")
+
+
+def test_forwars_stop_gradient():
+    np_data = np.random.uniform(1, 100, size=(1, 3, 224, 224)).astype(np.float32)
+    tf.reset_default_graph()
+    in_data = tf.placeholder(tf.float32, (1, 3, 224, 224), name="in_data")
+    tf.stop_gradient(in_data, name="stop_gradient")
+    compare_tf_with_tvm([np_data], ["in_data:0"], "stop_gradient:0")
+
+
+def test_forwars_constant():
+    np_data = np.random.uniform(0, 100, size=[1, 3, 10, 10]).astype(np.float32)
+    with tf.Graph().as_default():
+
+        tf_constat = tf.constant(np_data)
+        compare_tf_with_tvm([], [], tf_constat.name)
+
+
+def test_forwars_instance_norm():
+    def _test_forwars_instance_norm(center, scale, activation):
+        np_data = np.random.uniform(1, 100, size=(1, 224, 224, 3)).astype(np.float32)
+        tf.reset_default_graph()
+        in_data = tf.placeholder(tf.float32, (1, 224, 224, 3), name="in_data")
+
+        result = contrib.layers.instance_norm(
+            in_data, center, scale, epsilon=1e-06, activation_fn=None
+        )
+        compare_tf_with_tvm([np_data], ["in_data:0"], result.name, True)
+
+    _test_forwars_instance_norm(False, False, None)
+    _test_forwars_instance_norm(False, True, None)
+    _test_forwars_instance_norm(True, False, None)
+    _test_forwars_instance_norm(False, False, tf.nn.relu)
+    _test_forwars_instance_norm(True, False, tf.nn.relu)
+    _test_forwars_instance_norm(True, True, tf.nn.relu)
+
+
+def test_forwars_rank():
+    np_data = np.random.uniform(1, 100, size=(1, 3, 224, 224)).astype(np.float32)
+    tf.reset_default_graph()
+    in_data = tf.placeholder(tf.float32, (1, 3, 224, 224), name="in_data")
+    tf.rank(in_data, name="rank")
+    compare_tf_with_tvm([], [], "rank:0")
+
+
+def test_forwars_reciprocal():
+    np_data = np.random.uniform(1, 100, size=(1, 3, 224, 224)).astype(np.float32)
+    tf.reset_default_graph()
+    in_data = tf.placeholder(tf.float32, (1, 3, 224, 224), name="in_data")
+    tf.reciprocal(in_data, name="reciprocal")
+    compare_tf_with_tvm([np_data], ["in_data:0"], "reciprocal:0")
+
+
+def test_forwars_rint():
+    np_data = np.random.uniform(0, 100, size=(1, 3, 10, 10)).astype(np.float32)
+    tf.reset_default_graph()
+    in_data = tf.placeholder(tf.float32, (1, 3, 10, 10), name="in_data")
+    tf.rint(in_data, name="rint")
+    compare_tf_with_tvm([np_data], ["in_data:0"], "rint:0")
+
+
+def test_forwars_add():
+    np_data0 = np.random.uniform(0, 100, size=(1, 3, 224, 224)).astype(np.float32)
+    np_data1 = np.random.uniform(0, 100, size=(1, 3, 224, 224)).astype(np.float32)
+    tf.reset_default_graph()
+    in_0 = tf.placeholder(tf.float32, (1, 3, 224, 224), name="in_0")
+    in_1 = tf.placeholder(tf.float32, (1, 3, 224, 224), name="in_1")
+    tf.add(in_0, in_1, name="add")
+    compare_tf_with_tvm([np_data0, np_data1], ["in_0:0", "in_1:0"], "add:0")
+
+
+def test_forwars_subtract():
+    np_data0 = np.random.uniform(0, 100, size=(1, 3, 224, 224)).astype(np.float32)
+    np_data1 = np.random.uniform(0, 100, size=(1, 3, 224, 224)).astype(np.float32)
+    tf.reset_default_graph()
+    in_0 = tf.placeholder(tf.float32, (1, 3, 224, 224), name="in_0")
+    in_1 = tf.placeholder(tf.float32, (1, 3, 224, 224), name="in_1")
+
+    tf.subtract(in_0, in_1, name="subtract")
+    compare_tf_with_tvm([np_data0, np_data1], ["in_0:0", "in_1:0"], "subtract:0")
+
+
+def test_forwars_segment():
+    # segmet_max, segmet_min, segmet_mean, segmet_sum, segmet_prod
+    def _test_forwars_segment(name, size):
+        np_data = np.random.uniform(0, 100, size=size).astype(np.float32)
+        tf.reset_default_graph()
+        in_data = tf.placeholder(tf.float32, size, name="in_data")
+        segment_ids = [
+            0,
+        ]
+        for i in range(size[0]):
+            if np.array(segment_ids).sum() < size[0]:
+                for j in range(i):
+                    segment_ids.append(i)
+            else:
+                break
+        length = size[0] - len(segment_ids)
+        for i in range(length):
+            segment_ids.append(segment_ids[-1])
+
+        segment_ids = tf.constant(segment_ids)
+        segment_op = getattr(tf.math, name)
+        result = segment_op(in_data, segment_ids, name=name)
+        compare_tf_with_tvm(
+            [np_data],
+            [
+                "in_data:0",
+            ],
+            result.name,
+            True,
+        )
+
+    _test_forwars_segment("segment_max", [100])
+    _test_forwars_segment("segment_min", [100])
+    _test_forwars_segment("segment_mean", [100])
+    _test_forwars_segment("segment_sum", [100])
+    _test_forwars_segment("segment_prod", [100])
+
+
+def test_forwars_unsorted_segment():
+    # unsorted_segmet_max, unsorted_segmet_min, unsorted_segmet_mean,
+    #  unsorted_segmet_sum, unsorted_segmet_prod
+    def _test_forwars_unsorted_segment(name, size):
+        np_data = np.random.uniform(0, 100, size=size).astype(np.float32)
+        tf.reset_default_graph()
+        in_data = tf.placeholder(tf.float32, size, name="in_data")
+        segment_ids = [
+            0,
+        ]
+        for i in range(size[0]):
+            if np.array(segment_ids).sum() < size[0]:
+                for j in range(i):
+                    segment_ids.append(i)
+            else:
+                break
+        length = size[0] - len(segment_ids)
+        for i in range(length):
+            segment_ids.append(segment_ids[-1])
+
+        segment_ids = tf.constant(segment_ids)
+        segment_op = getattr(tf.math, name)
+        result = segment_op(in_data, segment_ids, size[0], name=name)
+        compare_tf_with_tvm(
+            [np_data],
+            [
+                "in_data:0",
+            ],
+            result.name,
+            True,
+        )
+
+    _test_forwars_unsorted_segment("unsorted_segment_max", [100])
+    _test_forwars_unsorted_segment("unsorted_segment_min", [100])
+    _test_forwars_unsorted_segment("unsorted_segment_mean", [100])
+    _test_forwars_unsorted_segment("unsorted_segment_sum", [100])
+    _test_forwars_unsorted_segment("unsorted_segment_prod", [100])
+
+
+def test_forwars_shape():
+    in_shape = [1, 10, 10, 3]
+    data = np.random.uniform(size=in_shape).astype("float32")
+
+    with tf.Graph().as_default():
+        in_data = array_ops.placeholder(shape=in_shape, dtype=data.dtype, name="in_data")
+        to_shape = tf.shape(in_data)[1:3]
+
+        compare_tf_with_tvm([], [], to_shape.name)
+
+
+def test_forwars_fake_quant_with_min_max_vars():
+    def _test_forwars_fake_quant_with_min_max_vars(min_range, max_range, num_bits, narrow_range):
+        np_data = np.random.uniform(min_range, max_range, size=(1, 3, 10, 10)).astype(np.float32)
+        tf.reset_default_graph()
+        in_data = tf.placeholder(tf.float32, (1, 3, 10, 10), name="in_data")
+        tf.fake_quant_with_min_max_vars(
+            in_data, min_range, max_range, num_bits, narrow_range, "fake_quant"
+        )
+        compare_tf_with_tvm([np_data], ["in_data:0"], "fake_quant:0")
+
+    _test_forwars_fake_quant_with_min_max_vars(-100, 100, 8, False)
+    _test_forwars_fake_quant_with_min_max_vars(-100, 0, 8, False)
+    _test_forwars_fake_quant_with_min_max_vars(0, 100, 8, False)
+
+    _test_forwars_fake_quant_with_min_max_vars(-100, 100, 8, True)
+    _test_forwars_fake_quant_with_min_max_vars(-100, 0, 8, True)
+    _test_forwars_fake_quant_with_min_max_vars(0, 100, 8, True)
+
+
+def test_forwars_fake_quant_with_min_max_vars_per_channel():
+    def _test_forwars_fake_quant_with_min_max_vars_per_channel(
+        min_range, max_range, num_bits, narrow_range
+    ):
+        np.random.seed(0)
+        np_data = np.random.uniform(min_range, max_range, size=(1, 10, 10, 3)).astype(np.float32)
+        tf.reset_default_graph()
+        in_data = tf.placeholder(tf.float32, (1, 10, 10, 3), name="in_data")
+        min_range = [min_range, min_range, min_range]
+        max_range = [max_range, max_range, max_range]
+        tf.fake_quant_with_min_max_vars_per_channel(
+            in_data, min_range, max_range, num_bits, narrow_range, "fake_quant_per_channel"
+        )
+        compare_tf_with_tvm([np_data], ["in_data:0"], "fake_quant_per_channel:0")
+
+    _test_forwars_fake_quant_with_min_max_vars_per_channel(-100, 100, 8, False)
+    _test_forwars_fake_quant_with_min_max_vars_per_channel(-100, 0, 8, False)
+    _test_forwars_fake_quant_with_min_max_vars_per_channel(0, 100, 8, False)
+
+    _test_forwars_fake_quant_with_min_max_vars_per_channel(-100, 100, 8, True)
+    _test_forwars_fake_quant_with_min_max_vars_per_channel(-100, 0, 8, True)
+    _test_forwars_fake_quant_with_min_max_vars_per_channel(0, 100, 8, True)
+
+
 def test_forward_atan2():
     """test operator tan """
     tf.disable_eager_execution()
@@ -3511,6 +4056,19 @@ def test_forward_mean():
 
 
 #######################################################################
+# check_numerics
+# ----
+
+
+def test_forward_check_numerics():
+    inp_array = np.random.uniform(size=[1, 3, 10, 10]).astype(np.float32)
+    with tf.Graph().as_default():
+        in1 = tf.placeholder(shape=inp_array.shape, dtype=inp_array.dtype)
+        tf.check_numerics(in1, message="GG", name="check_numerics")
+        compare_tf_with_tvm(inp_array, "Placeholder:0", "check_numerics:0")
+
+
+#######################################################################
 # Size
 # ----
 
@@ -3564,6 +4122,7 @@ def test_forward_reduce():
     _test_math_op(tf.math.reduce_max)
     _test_math_op(tf.math.reduce_min)
     _test_math_op(tf.math.reduce_prod)
+    _test_math_op(tf.math.reduce_sum, dtypes=["float32"])
     _test_math_op(tf.math.reduce_variance)
     _test_math_op(tf.math.reduce_std, dtypes=["float32"])
     _test_math_op(tf.math.reduce_logsumexp, dtypes=["float32"])
@@ -3668,6 +4227,10 @@ def test_placeholder():
 
         out1 = tf.math.add(var1, var2, name="out1")
         out2 = tf.math.add(out1, place1, name="out2")
+
+        compare_tf_with_tvm(
+            [in_data1, in_data2], ["place1:0", "in2:0"], "out2:0", init_global_variables=True
+        )
 
         compare_tf_with_tvm(
             [in_data1, in_data2], ["place1:0", "in2:0"], "out2:0", init_global_variables=True
@@ -3822,7 +4385,7 @@ def _test_dilation2d(tensor_in_sizes, filter_in_sizes, strides, dilations, paddi
 
 
 def test_forward_dilation():
-    _test_dilation2d([1, 18, 18, 32], [4, 4, 32], [1, 1, 1, 1], [1, 2, 1, 1], "VALID")
+    # _test_dilation2d([1, 18, 18, 32], [4, 4, 32], [1, 1, 1, 1], [1, 2, 1, 1], "VALID")
     _test_dilation2d([1, 15, 15, 32], [4, 4, 32], [1, 1, 1, 1], [1, 2, 1, 1], "SAME")
     _test_dilation2d([1, 5, 5, 1], [2, 2, 1], [1, 1, 1, 1], [1, 1, 1, 1], "VALID")
     _test_dilation2d([1, 5, 5, 1], [3, 3, 1], [1, 1, 1, 1], [1, 2, 2, 1], "VALID")
@@ -3838,6 +4401,21 @@ def test_forward_dilation():
     _test_dilation2d([1, 224, 224, 10], [8, 8, 10], [1, 3, 1, 1], [1, 1, 1, 1], "SAME")
     _test_dilation2d([1, 3, 3, 1], [2, 2, 1], [1, 1, 1, 1], [1, 2, 2, 1], "SAME")
     _test_dilation2d([1, 3, 3, 1], [2, 2, 1], [1, 1, 1, 1], [1, 1, 2, 1], "VALID")
+
+
+#######################################################################
+# FullyConnect
+# ----------------------
+def test_forward_fully_connected():
+    np_data = np.random.uniform(-100, 100, size=(1, 10, 10, 3)).astype(np.float32)
+    tf.reset_default_graph()
+    in_data = tf.placeholder(tf.float32, (1, 10, 10, 3), name="in_data")
+    num_outputs = 10
+    contrib.layers.fully_connected(in_data, num_outputs)
+
+    compare_tf_with_tvm(
+        [np_data], ["in_data:0"], "fully_connected/Relu:0", init_global_variables=True
+    )
 
 
 #######################################################################
@@ -3885,6 +4463,7 @@ def _test_spop_placeholder_without_shape_info():
         data = np.array([[-1, 1], [2, -2]], dtype=np.int32)
         data2 = np.array([[-2, 3], [4, -6]], dtype=np.int32)
         data3 = np.array([[-2, 3], [4, -6]], dtype=np.int32)
+
         z1 = gen_functional_ops.StatefulPartitionedCall(args=[pl1, pl2], Tout=[tf.int32], f=Forward)
         z2 = z1 + pl3
         compare_tf_with_tvm(
@@ -3927,6 +4506,7 @@ def _test_spop_placeholder_numpy_arange_feed():
             return tf.add(x, y, "add_t1_t2")
 
         t3 = add(t1, t2)
+
         compare_tf_with_tvm(
             [t1_data, t2_data], ["t1:0", "t2:0"], [t3.name], mode="vm", init_global_variables=True
         )
@@ -3944,6 +4524,7 @@ def _test_spop_placeholder_numpy_array_feed():
             return tf.add(x, y, "add_t1_t2")
 
         t3 = add(t1, t2)
+
         compare_tf_with_tvm(
             [t1_data, t2_data], ["t1:0", "t2:0"], [t3.name], mode="vm", init_global_variables=True
         )
@@ -4055,6 +4636,7 @@ def _test_spop_arithmetic():
         m = tf.constant(10)
         x = tf.constant(20)
         c = tf.constant(2)
+
         spopFn = gen_functional_ops.StatefulPartitionedCall(
             args=[m, x, c], Tout=[tf.int32], f=arithmetic
         )
@@ -4119,6 +4701,7 @@ def _test_spop_constants():
 
         a = tf.constant(20000, name="a")
         b = tf.constant(40000, name="b")
+
         spopFn = gen_functional_ops.StatefulPartitionedCall(
             args=[a, b], Tout=[tf.int32], f=constantsFn
         )
@@ -4276,8 +4859,8 @@ def test_forward_dynamic_input_shape():
 
 
 def test_forward_dynmaic_rnn_lstmblockcell():
-    if package_version.parse(tf.VERSION) >= package_version.parse("2.0.0"):
-        return
+    # if package_version.parse(tf.VERSION) >= package_version.parse("2.0.0"):
+    #     return
 
     total_series_length = 50000
     truncated_backprop_length = 15
@@ -4370,6 +4953,179 @@ def test_forward_dynmaic_rnn_lstmblockcell():
         for i in range(len(tf_output)):
             tvm.testing.assert_allclose(tf_output[i], tvm_output[i], atol=1e-5, rtol=1e-5)
 
+
+#######################################################################
+# Main
+# ----
+if __name__ == "__main__":
+    # Transforms
+    test_forward_slice()
+    test_forward_transpose()
+    test_forward_reshape()
+    test_forward_depthtospace()
+    test_forward_spacetodepth()
+    test_forward_squeeze()
+    test_forward_pack()
+    test_forward_size()
+    test_forward_broadcast_to()
+    test_forward_fill()
+    test_forward_crop()
+    test_forward_resize()
+    test_forward_crop_and_resize()
+    test_forward_pad()
+    test_forward_unpack()
+    test_forward_gather()
+    test_forward_gather_nd()
+    test_forward_stridedslice()
+    test_forward_split()
+    test_forward_unstack()
+    test_forward_tile()
+    test_forward_top_k_v2()
+    test_forward_clip()
+    test_forward_clip_by_value()
+    test_forward_maximum()
+    test_forward_minimum()
+    test_forward_range()
+    test_forward_right_shift()
+    test_forward_left_shift()
+    test_forward_truncatemod()
+    test_forward_one_hot()
+    test_forward_atan2()
+    test_forward_nms()
+
+    # Activations
+    test_forward_sigmoid()
+    test_forward_relu()
+    test_forward_relu6()
+    test_forward_leaky_relu()
+    test_forward_elu()
+    test_forward_selu()
+    test_forward_tanh()
+    test_forward_prelu()
+    test_forward_thresholdedReLU()
+
+    # Tensor
+    test_forward_round()
+    test_forward_reverse_v2()
+    test_forward_pow_exp()
+    test_forward_sign()
+    test_forward_negative()
+    test_forward_divide()
+    test_forward_abs()
+    test_forward_softplus()
+    test_forward_sqrt()
+    test_forward_rsqrt()
+    test_forward_expand_dims()
+    test_forward_square()
+    test_forward_softmax()
+    test_forward_softsign()
+    test_forward_log_softmax()
+    test_forward_bias_add()
+    test_forward_zeros_like()
+    test_forward_squared_difference()
+    test_forward_add_n()
+    test_forward_floormod()
+    test_forward_isfinite()
+    test_forward_isinf()
+    test_forward_unravel_index()
+    test_forward_unary()
+    test_forward_cumprod()
+    test_forward_cumsum()
+    test_forward_quantize()
+    test_forward_dequantize()
+    test_forward_expm1()
+    test_forwars_fake_quant_with_min_max_vars()
+    test_forwars_fake_quant_with_min_max_vars_per_channel()
+    test_forwars_identity()
+    test_forwars_instance_norm()
+    test_forwars_rank()
+    test_forwars_reciprocal()
+    test_forwars_rint()
+    test_forwars_segment()
+    test_forwars_unsorted_segment()
+    test_forwars_shape()
+    test_forwars_add()
+    test_forwars_subtract()
+    test_forwars_stop_gradient()
+    test_forwars_constant()
+
+    # Reductions
+    test_forward_argminmax()
+    test_forward_reduce()
+    test_forward_mean()
+
+    # TensorArray
+    test_tensor_array_write_read()
+    test_tensor_array_concat()
+    test_tensor_array_scatter()
+    test_tensor_array_gather()
+    test_tensor_array_size()
+    test_tensor_array_split()
+    test_tensor_array_stack()
+    test_tensor_array_unstack()
+
+    # General
+    test_forward_multi_input()
+    test_forward_multi_output()
+    test_forward_variable()
+    test_placeholder()
+
+    # NN
+    test_forward_convolution()
+    test_forward_convolution1d()
+    test_forward_convolution3d()
+    test_forward_convolution3d_transpose()
+    test_forward_atrous_conv2d()
+    test_forward_pooling()
+    test_forward_concat_v2()
+    test_forward_lrn()
+    test_forward_l2_normalize()
+    test_forward_space_to_batch_nd()
+    test_forward_batch_to_space_nd()
+    test_forward_dilation()
+    test_forward_fully_connected()
+    test_forward_batch_normal()
+
+    # End to End
+    test_forward_inception_v3()
+    test_forward_inception_v1()
+    test_forward_mobilenet()
+    test_forward_resnetv2()
+    test_forward_ssd()
+    test_forward_placeholder()
+    test_forward_ptb()
+
+    # RNN
+    test_forward_lstm()
+
+    # Elementwise
+    test_forward_ceil()
+    test_forward_floor()
+
+    # Relational ops
+    test_forward_rel_ops()
+    test_forward_logical()
+    test_forward_where()
+    test_forward_matmul()
+    test_forward_batch_matmul()
+    test_forward_hard_sigmoid()
+
+    # check_numerics
+    test_forward_check_numerics()
+
+    # Internal misc. ops
+    test_read_variable_op()
+
+    # Sharing params case using Mean ops
+    test_sharing_node()
+
+    # StatefulPartitionedCall
+    test_forward_spop()
+
+    # Test dynamic input shape
+    test_forward_dynamic_input_shape()
+
+    test_forward_dynmaic_rnn_lstmblockcell()
 
 if __name__ == "__main__":
     pytest.main([__file__])

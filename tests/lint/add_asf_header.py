@@ -141,6 +141,13 @@ FMT_MAP = {
     "plist": header_mdstyle,
     "xcworkspacedata": header_mdstyle,
     "html": header_mdstyle,
+    # needed by HHB
+    "cl": header_cstyle,
+    "cfg": header_pystyle,
+    "spec": header_pystyle,
+    "list": header_pystyle,
+    "def": header_cstyle,
+    "proto": header_cstyle,
 }
 
 

@@ -79,14 +79,18 @@ class QConfig(Object):
         "calibrate_mode": "global_scale",
         "global_scale": 8.0,
         "weight_scale": "power2",
+        "quantized_type": "asym",
         "skip_dense_layer": True,
         "skip_conv_layers": [0],
         "do_simulation": False,
         "round_for_shift": True,
         "debug_enabled_ops": None,
         "rounding": "UPWARD",
+        "fuse_relu": False,
         "calibrate_chunk_by": -1,
         "partition_conversions": "disabled",
+        "channel_quantization": False,
+        "broadcast_quantization": False,
     }
 
     # pylint: disable=no-member
@@ -158,6 +162,11 @@ def qconfig(**kwargs):
         power2: Find the maximum of the absolute value of the tensor, and then round up to power
         of two.
         max: Find the maximum of the absolute value of the tensor
+
+    quantized_type: str
+        choose quantize type asymmetiric(int8) or asymmetiric(uint8).
+        asym: asymmetiric.
+        sym: symmetiric.
 
     skip_dense_layer: boolean
         Whether to skip all nn.dense layer type. By default are skipped.

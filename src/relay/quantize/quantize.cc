@@ -88,6 +88,9 @@ struct TVMQConfigThreadLocalEntry {
   /*! \brief The current build config context */
   std::stack<QConfig> context_stack;
 
+  /*! \brief The current build config context backups*/
+  std::stack<QConfig> config_stack;
+
   TVMQConfigThreadLocalEntry() : default_config(make_object<QConfigNode>()) {}
 };
 
@@ -97,6 +100,7 @@ typedef dmlc::ThreadLocalStore<TVMQConfigThreadLocalEntry> TVMQConfigThreadLocal
 void QConfig::EnterQConfigScope(const QConfig& build_config) {
   TVMQConfigThreadLocalEntry* entry = TVMQConfigThreadLocalStore::Get();
   entry->context_stack.push(build_config);
+  entry->config_stack.push(build_config);
 }
 
 void QConfig::ExitQConfigScope() {
@@ -111,6 +115,11 @@ QConfig& QConfig::Current() {
   }
 
   return entry->default_config;
+}
+
+QConfig& QConfig::CSIConfig() {
+  TVMQConfigThreadLocalEntry* entry = TVMQConfigThreadLocalStore::Get();
+  return entry->config_stack.top();
 }
 
 TVM_REGISTER_NODE_TYPE(QConfigNode);

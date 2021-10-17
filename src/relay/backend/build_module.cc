@@ -127,6 +127,11 @@ class RelayBuildModule : public runtime::ModuleNode {
         CHECK_EQ(args.num_args, 3);
         this->Build(args[0], args[1], args[2]);
       });
+    } else if (name == "build_hhb") {
+      return PackedFunc([sptr_to_self, this](TVMArgs args, TVMRetValue* rv) {
+        CHECK_EQ(args.num_args, 4);
+        this->BuildHHB(args[0], args[1], args[2], args[3]);
+      });
     } else if (name == "list_params") {
       return PackedFunc(
           [sptr_to_self, this](TVMArgs args, TVMRetValue* rv) { *rv = this->ListParamNames(); });
@@ -227,6 +232,24 @@ class RelayBuildModule : public runtime::ModuleNode {
     BuildRelay(mod, params_);
     // Clear compile engine so that tuning schedules can be changed between runs. See issue #6096.
     CompileEngine::Global()->Clear();
+  }
+
+  /*!
+   * \brief Build relay IRModule for HHB runtime
+   *
+   * \param mod Relay IRModule
+   * \param target Target device
+   * \param target_host Host target device
+   */
+  void BuildHHB(IRModule mod, const TargetsMap& targets, const tvm::Target& target_host,
+                const std::string& params_path) {
+    targets_ = targets;
+    target_host_ = target_host;
+
+    Target t_host = GetTargetHost();
+
+    auto pf = tvm::runtime::Registry::Get("relay.ext.csinn");
+    ret_.mod = (*pf)(mod, t_host, params_path);
   }
 
  protected:

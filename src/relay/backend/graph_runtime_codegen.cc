@@ -405,6 +405,7 @@ class GraphRuntimeCodegen : public backend::MemoizedExprTranslator<std::vector<G
     if (!lowered_funcs_.count(target->str())) {
       lowered_funcs_[target->str()] = IRModule();
     }
+
     lowered_funcs_[target->str()]->Update(lowered_func->funcs);
     return GraphAddCallNode(op, _GetUniqueName(lowered_func->func_name), lowered_func->func_name);
   }

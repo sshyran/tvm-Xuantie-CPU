@@ -137,6 +137,164 @@ static inline int64_t get_const_int(const tvm::PrimExpr& x) {
 Expr FixedPointMultiplyToNearest(Expr tensor, double multiplier,
                                  const Array<IndexExpr>& input_shape);
 
+Expr MakeQnnCSIRequantize(Expr data, double input_scale, int32_t input_zero_point,
+                          double output_scale, int32_t output_zero_point, std::string rounding,
+                          DataType out_dtype);
+
+Expr MakeQnnCSIConv2D(Expr data, Expr weight, Expr bias, double input_scale,
+                      int32_t input_zero_point, double kernel_scale, int32_t kernel_zero_point,
+                      double output_scale, int32_t output_zero_point, Array<IndexExpr> strides,
+                      Array<IndexExpr> padding, Array<IndexExpr> dilation, int groups,
+                      IndexExpr channels, Array<IndexExpr> kernel_size, std::string data_layout,
+                      std::string kernel_layout, std::string out_layout, DataType out_dtype,
+                      Array<IndexExpr> max_values, Array<IndexExpr> min_values, String layer_name);
+
+Expr MakeQnnCSIConv2DRelu(Expr data, Expr weight, Expr bias, double input_scale,
+                          int32_t input_zero_point, double kernel_scale, int32_t kernel_zero_point,
+                          double output_scale, int32_t output_zero_point, Array<IndexExpr> strides,
+                          Array<IndexExpr> padding, Array<IndexExpr> dilation, int groups,
+                          IndexExpr channels, Array<IndexExpr> kernel_size, std::string data_layout,
+                          std::string kernel_layout, std::string out_layout, DataType out_dtype,
+                          Array<IndexExpr> max_values, Array<IndexExpr> min_values,
+                          String layer_name);
+
+Expr MakeQnnCSIConv2DRelu6(Expr data, Expr weight, Expr bias, double input_scale,
+                           int32_t input_zero_point, double kernel_scale, int32_t kernel_zero_point,
+                           double output_scale, int32_t output_zero_point, Array<IndexExpr> strides,
+                           Array<IndexExpr> padding, Array<IndexExpr> dilation, int groups,
+                           IndexExpr channels, Array<IndexExpr> kernel_size,
+                           std::string data_layout, std::string kernel_layout,
+                           std::string out_layout, DataType out_dtype, Array<IndexExpr> max_values,
+                           Array<IndexExpr> min_values, String layer_name);
+
+Expr MakeQnnCSIDense(Expr data, Expr weight, Expr bias, double input_scale,
+                     int32_t input_zero_point, double kernel_scale, int32_t kernel_zero_point,
+                     double output_scale, int32_t output_zero_point, IndexExpr units,
+                     DataType out_dtype, Array<IndexExpr> max_values, Array<IndexExpr> min_values,
+                     String layer_name);
+
+Expr MakeQnnCSIAdd(Expr lhs, Expr rhs, double lhs_scale, int32_t lhs_zero_point, double rhs_scale,
+                   int32_t rhs_zero_point, double output_scale, int32_t output_zero_point,
+                   Array<IndexExpr> max_values, Array<IndexExpr> min_values, String layer_name);
+
+Expr MakeQnnCSIMul(Expr lhs, Expr rhs, double lhs_scale, int32_t lhs_zero_point, double rhs_scale,
+                   int32_t rhs_zero_point, double output_scale, int32_t output_zero_point,
+                   Array<IndexExpr> max_values, Array<IndexExpr> min_values, String layer_name);
+
+Expr MakeQnnCSIConcatenate(Expr data, Array<tvm::PrimExpr> input_scales,
+                           Array<tvm::PrimExpr> input_zero_points, double output_scale,
+                           int32_t output_zero_point, int axis, Array<IndexExpr> max_values,
+                           Array<IndexExpr> min_values, String layer_name);
+
+Expr MakeQnnCSIRelu6(Expr data, double input_scale, int32_t input_zero_point, double output_scale,
+                     int32_t output_zero_point, DataType out_dtype, Array<IndexExpr> max_values,
+                     Array<IndexExpr> min_values, String layer_name);
+
+Expr MakeQnnCSIRelu(Expr data, double input_scale, int32_t input_zero_point, double output_scale,
+                    int32_t output_zero_point, DataType out_dtype, Array<IndexExpr> max_values,
+                    Array<IndexExpr> min_values, String layer_name);
+
+Expr MakeQnnCSIPRelu(Expr data, Expr alpha, int axis, double input_scale, int32_t input_zero_point,
+                     double alpha_scale, int32_t alpha_zero_point, double output_scale,
+                     int32_t output_zero_point, DataType out_dtype, Array<IndexExpr> max_values,
+                     Array<IndexExpr> min_values, String layer_name);
+
+Expr MakeQnnCSILeakyRelu(Expr data, double alpha, double input_scale, int32_t input_zero_point,
+                         double output_scale, int32_t output_zero_point, DataType out_dtype,
+                         Array<IndexExpr> max_values, Array<IndexExpr> min_values,
+                         String layer_name);
+
+Expr MakeQnnCSIMaxPool(Expr data, double input_scale, int32_t input_zero_point, double output_scale,
+                       int32_t output_zero_point, DataType out_dtype, Array<IndexExpr> strides,
+                       Array<IndexExpr> padding, Array<IndexExpr> pool_size, bool ceil_mode,
+                       std::string layout, Array<IndexExpr> max_values, Array<IndexExpr> min_values,
+                       String layer_name);
+
+Expr MakeQnnCSIAvgPool(Expr data, double input_scale, int32_t input_zero_point, double output_scale,
+                       int32_t output_zero_point, DataType out_dtype, Array<IndexExpr> strides,
+                       Array<IndexExpr> padding, Array<IndexExpr> pool_size, bool ceil_mode,
+                       bool count_include_pad, std::string layout, Array<IndexExpr> max_values,
+                       Array<IndexExpr> min_values, String layer_name);
+
+Expr MakeQnnCSIReshape(Expr data, Array<Integer> newshape, bool reverse, double input_scale,
+                       int32_t input_zero_point, double output_scale, int32_t output_zero_point,
+                       DataType out_dtype, Array<IndexExpr> max_values, Array<IndexExpr> min_values,
+                       String layer_name);
+
+Expr MakeQnnCSIProposal(Expr cls_prob, Expr bbox_pred, Expr im_info, Array<IndexExpr> scales,
+                        Array<IndexExpr> ratios, int feature_stride, double threshold,
+                        int rpn_pre_nms_top_n, int rpn_post_nms_top_n, int rpn_min_size,
+                        bool iou_loss, Array<tvm::PrimExpr> input_scales,
+                        Array<tvm::PrimExpr> input_zero_points, double output_scale,
+                        int32_t output_zero_point, DataType out_dtype, Array<IndexExpr> max_values,
+                        Array<IndexExpr> min_values, String layer_name);
+
+Expr MakeQnnCSIPSROIPooling(Expr cls_prob, Expr roi, double spatial_scale, int output_dim,
+                            int group_size, Array<tvm::PrimExpr> input_scales,
+                            Array<tvm::PrimExpr> input_zero_points, double output_scale,
+                            int32_t output_zero_point, DataType out_dtype,
+                            Array<IndexExpr> max_values, Array<IndexExpr> min_values,
+                            String layer_name);
+
+Expr MakeQnnCSIROIPooling(Expr data, Expr roi, Array<IndexExpr> pooled_size, double spatial_scale,
+                          Array<tvm::PrimExpr> input_scales, Array<tvm::PrimExpr> input_zero_points,
+                          double output_scale, int32_t output_zero_point, DataType out_dtype,
+                          Array<IndexExpr> max_values, Array<IndexExpr> min_values,
+                          String layer_name);
+
+Expr MakeQnnCSILRN(Expr data, int size, int axis, double alpha, double beta, double bias,
+                   double input_scale, int32_t input_zero_point, double output_scale,
+                   int32_t output_zero_point, DataType out_dtype, Array<IndexExpr> max_values,
+                   Array<IndexExpr> min_values, String layer_name);
+
+Expr MakeQnnCSIUnPooling(Expr data, Expr mask_data, Array<IndexExpr> scales,
+                         Array<IndexExpr> out_padding, double input_scale, int32_t input_zero_point,
+                         double output_scale, int32_t output_zero_point, DataType out_dtype,
+                         std::string layout, Array<IndexExpr> max_values,
+                         Array<IndexExpr> min_values, String layer_name);
+
+Expr MakeQnnCSIUpSampling(Expr data, double scale_h, double scale_w, int32_t align_corners,
+                          std::string method, double input_scale, int32_t input_zero_point,
+                          double output_scale, int32_t output_zero_point, DataType out_dtype,
+                          std::string layout, Array<IndexExpr> max_values,
+                          Array<IndexExpr> min_values, String layer_name);
+
+Expr MakeQnnCSIGlobalAvgPool(Expr data, std::string layout, double input_scale,
+                             int32_t input_zero_point, double output_scale,
+                             int32_t output_zero_point, DataType out_dtype,
+                             Array<IndexExpr> max_values, Array<IndexExpr> min_values,
+                             String layer_name);
+
+Expr MakeQnnCSIGlobalMaxPool(Expr data, std::string layout, double input_scale,
+                             int32_t input_zero_point, double output_scale,
+                             int32_t output_zero_point, DataType out_dtype,
+                             Array<IndexExpr> max_values, Array<IndexExpr> min_values,
+                             String layer_name);
+
+Expr MakeQnnCSITranspose(Expr data, Array<Integer> axes, double input_scale,
+                         int32_t input_zero_point, double output_scale, int32_t output_zero_point,
+                         DataType out_dtype, Array<IndexExpr> max_values,
+                         Array<IndexExpr> min_values, String layer_name);
+
+Expr MakeQnnCSIFlatten(Expr data, double input_scale, int32_t input_zero_point, double output_scale,
+                       int32_t output_zero_point, DataType out_dtype, Array<IndexExpr> max_values,
+                       Array<IndexExpr> min_values, String layer_name);
+
+Expr MakeQnnCSISigmoid(Expr data, double input_scale, int32_t input_zero_point, double output_scale,
+                       int32_t output_zero_point, DataType out_dtype, Array<IndexExpr> max_values,
+                       Array<IndexExpr> min_values, String layer_name);
+
+Expr MakeQnnCSIBatchNorm(Expr data, Expr gamma, Expr beta, Expr moving_mean, Expr moving_var,
+                         double input_scale, int32_t input_zero_point, double output_scale,
+                         int32_t output_zero_point, int axis, double epsilon, bool center,
+                         bool scale, Array<IndexExpr> max_values, Array<IndexExpr> min_values,
+                         String layer_name);
+
+Expr MakeQnnCSIPad(Expr data, Array<Array<IndexExpr>> pad_width, double pad_value,
+                   std::string pad_mode, double input_scale, int32_t input_zero_point,
+                   double output_scale, int32_t output_zero_point, DataType out_dtype,
+                   Array<IndexExpr> max_values, Array<IndexExpr> min_values, String layer_name);
+
 /*
  * \brief Fixed point multiplication between integer tensor with floating point
  scalar where the input tensor is per-axis/per-channel quantized..

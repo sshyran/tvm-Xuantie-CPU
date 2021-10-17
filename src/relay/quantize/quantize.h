@@ -67,10 +67,16 @@ class QConfigNode : public Object {
   std::string calibrate_mode = "global_scale";
   double global_scale = 8.0;
   std::string weight_scale = "power2";
+  std::string quantized_type = "asym";
+
   bool skip_dense_layer = true;
   Array<Expr> skip_conv_layers = Array<Expr>(ObjectPtr<Object>(nullptr));
   bool do_simulation = false;
   bool round_for_shift = true;
+  bool fuse_relu = false;
+  bool channel_quantization = false;
+  bool broadcast_quantization = false;
+
   Array<Expr> debug_enabled_ops = Array<Expr>(ObjectPtr<Object>(nullptr));
   std::string rounding = "UPWARD";
   int calibrate_chunk_by = -1;
@@ -86,14 +92,18 @@ class QConfigNode : public Object {
     v->Visit("calibrate_mode", &calibrate_mode);
     v->Visit("global_scale", &global_scale);
     v->Visit("weight_scale", &weight_scale);
+    v->Visit("quantized_type", &quantized_type);
     v->Visit("skip_dense_layer", &skip_dense_layer);
     v->Visit("skip_conv_layers", &skip_conv_layers);
     v->Visit("do_simulation", &do_simulation);
     v->Visit("round_for_shift", &round_for_shift);
+    v->Visit("fuse_relu", &fuse_relu);
+    v->Visit("channel_quantization", &channel_quantization);
     v->Visit("debug_enabled_ops", &debug_enabled_ops);
     v->Visit("rounding", &rounding);
     v->Visit("calibrate_chunk_by", &calibrate_chunk_by);
     v->Visit("partition_conversions", &partition_conversions);
+    v->Visit("broadcast_quantization", &broadcast_quantization);
   }
 
   static constexpr const char* _type_key = "relay.quantize.QConfig";
@@ -130,6 +140,7 @@ class QConfig : public ObjectRef {
    * \return The configuration that is the current context.
    */
   static QConfig& Current();
+  static QConfig& CSIConfig();
 
   using ContainerType = QConfigNode;
 };

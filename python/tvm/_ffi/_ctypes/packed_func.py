@@ -19,6 +19,7 @@
 """Function configuration API."""
 import ctypes
 import traceback
+import logging
 from numbers import Number, Integral
 
 from ..base import _LIB, get_last_ffi_error, py2cerror, check_call
@@ -74,6 +75,7 @@ def convert_to_tvm_func(pyfunc):
 
     def cfun(args, type_codes, num_args, ret, _):
         """ ctypes function """
+        logging.debug("local_pyfunc cfun to be %s", pyfunc)
         num_args = num_args.value if isinstance(num_args, ctypes.c_int) else num_args
         pyargs = (C_TO_PY_ARG_SWITCH[type_codes[i]](args[i]) for i in range(num_args))
         # pylint: disable=broad-except

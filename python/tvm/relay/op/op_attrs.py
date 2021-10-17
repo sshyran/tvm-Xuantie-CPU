@@ -319,6 +319,21 @@ class ProposalAttrs(Attrs):
     """Attributes used in proposal operators"""
 
 
+@tvm._ffi.register_object("relay.attrs.PSRoIPoolingAttrs")
+class PSRoIPoolingAttrs(Attrs):
+    """Attributes used in psroipooling operators"""
+
+
+@tvm._ffi.register_object("relay.attrs.MaxPool2dLocationAttrs")
+class MaxPool2dLocationAttrs(Attrs):
+    """Attributes used in MaxPool2dLocation operators"""
+
+
+@tvm._ffi.register_object("relay.attrs.UnpoolingAttrs")
+class UnpoolingAttrs(Attrs):
+    """Attributes used in Unpooling operators"""
+
+
 @tvm._ffi.register_object("relay.attrs.MaxPool2DAttrs")
 class MaxPool2DAttrs(Attrs):
     """Attributes used in max_pool2d operators"""

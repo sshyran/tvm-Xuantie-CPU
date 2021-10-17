@@ -187,12 +187,12 @@ def select_implementation(op, attrs, inputs, out_type, target, use_autotvm=True)
 
     best_plevel_impl = max(all_impls, key=lambda x: x.plevel)
     if not use_autotvm:
-        logger.info(
-            "Using %s for %s based on highest priority (%d)",
-            best_plevel_impl.name,
-            op.name,
-            best_plevel_impl.plevel,
-        )
+        #        logger.info(
+        #            "Using %s for %s based on highest priority (%d)",
+        #            best_plevel_impl.name,
+        #            op.name,
+        #            best_plevel_impl.plevel,
+        #        )
         outs = best_plevel_impl.compute(attrs, inputs, out_type)
         return best_plevel_impl, outs
 
@@ -214,36 +214,36 @@ def select_implementation(op, attrs, inputs, out_type, target, use_autotvm=True)
         if cfg.is_fallback:
             # Skip fallback config
             continue
-        logger.info("Implementation %s for %s has cost %.2e", impl.name, op.name, cfg.cost)
+        #        logger.info("Implementation %s for %s has cost %.2e", impl.name, op.name, cfg.cost)
         if best_cfg is None or best_cfg.cost > cfg.cost:
             best_autotvm_impl = impl
             best_cfg = cfg
     autotvm.GLOBAL_SCOPE.silent = False
     if best_autotvm_impl:
         # The best autotvm implementation definitely doesn't use fallback config
-        logger.info(
-            "Using %s for %s based on lowest cost (%.2e)",
-            best_autotvm_impl.name,
-            op.name,
-            best_cfg.cost,
-        )
+        #        logger.info(
+        #            "Using %s for %s based on lowest cost (%.2e)",
+        #            best_autotvm_impl.name,
+        #            op.name,
+        #            best_cfg.cost,
+        #        )
         return best_autotvm_impl, outputs[best_autotvm_impl]
     # Use the implementation with highest plevel
-    if workloads[best_plevel_impl] is not None:
-        msg = (
-            "Cannot find config for target=%s, workload=%s. A fallback configuration "
-            "is used, which may bring great performance regression."
-            % (target, workloads[best_plevel_impl])
-        )
-        if msg not in autotvm.task.DispatchContext.warning_messages:
-            autotvm.task.DispatchContext.warning_messages.add(msg)
-            autotvm_logger.warning(msg)
-    logger.info(
-        "Using %s for %s based on highest priority (%s)",
-        best_plevel_impl.name,
-        op.name,
-        best_plevel_impl.plevel,
-    )
+    #    if workloads[best_plevel_impl] is not None:
+    #        msg = (
+    #            "Cannot find config for target=%s, workload=%s. A fallback configuration "
+    #            "is used, which may bring great performance regression."
+    #            % (target, workloads[best_plevel_impl])
+    #        )
+    #        if msg not in autotvm.task.DispatchContext.warning_messages:
+    #            autotvm.task.DispatchContext.warning_messages.add(msg)
+    #            autotvm_logger.warning(msg)
+    #    logger.info(
+    #        "Using %s for %s based on highest priority (%s)",
+    #        best_plevel_impl.name,
+    #        op.name,
+    #        best_plevel_impl.plevel,
+    #    )
     return best_plevel_impl, outputs[best_plevel_impl]
 
 

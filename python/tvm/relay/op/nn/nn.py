@@ -113,6 +113,7 @@ def conv1d(
     if isinstance(dilation, int):
         dilation = (dilation,)
     padding = get_pad_tuple1d(padding)
+
     return _make.conv1d(
         data,
         weight,
@@ -220,6 +221,7 @@ def conv2d(
     # TODO enforce 4-way padding in topi/nn/conv2d after #4644 merged
     # convert 2-way padding to 4-way padding
     padding = get_pad_tuple2d(padding)
+
     return _make.conv2d(
         data,
         weight,
@@ -876,6 +878,58 @@ def max_pool3d(
         strides = (strides, strides, strides)
     padding = get_pad_tuple3d(padding)
     return _make.max_pool3d(data, pool_size, strides, padding, layout, ceil_mode)
+
+
+def max_pool2d_with_argmax(
+    data, pool_size=(1, 1), strides=(1, 1), padding=(0, 0), layout="NCHW", ceil_mode=False
+):
+    r"""2D maximum pooling operator.
+
+    This operator takes data as input and does 2D max value calculation
+    with in pool_size sized window by striding defined by stride
+
+
+    In the default case, where the data_layout is `NCHW`
+    a data Tensor with shape `(batch_size, in_channels, height, width)`,
+    to produce an output Tensor with the following rule:
+
+    with data of shape (b, c, h, w) and pool_size (kh, kw)
+
+    .. math::
+
+        \mbox{out}(b, c, y, x)  = \max_{m=0, \ldots, kh-1} \max_{n=0, \ldots, kw-1}
+             \mbox{data}(b, c, \mbox{stride}[0] * y + m, \mbox{stride}[1] * x + n)
+
+    Padding is applied to data before the computation.
+    ceil_mode is used to take ceil or floor while computing out shape.
+    This operator accepts data layout specification.
+
+    Parameters
+    ----------
+    data : tvm.relay.Expr
+        The input data to the operator.
+
+    pool_size : int or tuple of int, optional
+        The size of window for pooling.
+
+    strides : tuple of int, optional
+        The strides of pooling.
+
+    padding : tuple of int, optional
+        The padding for pooling.
+
+    layout : str, optional
+        Layout of the input.
+
+    ceil_mode : bool, optional
+        To enable or disable ceil while pooling.
+
+    Returns
+    -------
+    result : tvm.relay.Expr
+        The computed result.
+    """
+    return _make.max_pool2d_with_argmax(data, pool_size, strides, padding, layout, ceil_mode)
 
 
 def avg_pool1d(

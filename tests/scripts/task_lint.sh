@@ -31,11 +31,20 @@ echo "Checking file types..."
 python3 tests/lint/check_file_type.py
 
 echo "Checking ASF license headers..."
-tests/lint/check_asf_header.sh
+if [[ "$#" -lt 1 ]]; then
+  tests/lint/check_asf_header.sh
+else
+  tests/lint/check_asf_header.sh $1
+fi
 
 echo "Linting the C++ code..."
 tests/lint/cpplint.sh
 
+# echo "clang-format check..."
+# # check lastest change, for squash merge into master
+# ./tests/lint/git-clang-format.sh HEAD~1
+# # chekc against origin/master for PRs.
+# ./tests/lint/git-clang-format.sh origin/hhb-tvm
 echo "clang-format check..."
 tests/lint/clang_format.sh
 

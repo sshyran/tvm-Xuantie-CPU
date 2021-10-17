@@ -344,6 +344,7 @@ class FallbackContext(DispatchContext):
 
 
 DispatchContext.current = FallbackContext()
+DispatchContext.current.silent = True
 
 
 def clear_fallback_cache(target, workload):

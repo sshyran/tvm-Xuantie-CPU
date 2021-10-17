@@ -14,6 +14,8 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+# pylint: disable=invalid-name, unused-argument, too-many-lines, import-outside-toplevel
+# pylint: disable=unused-variable
 """Target data structure."""
 import os
 import re
@@ -44,6 +46,7 @@ class Target(Object):
     - :py:func:`tvm.target.rocm` create ROCM target
     - :py:func:`tvm.target.mali` create Mali target
     - :py:func:`tvm.target.intel_graphics` create Intel Graphics target
+    - :py:func:`tvm.target.csky_cpu` create CSKY target
     """
 
     def __init__(self, tag_or_str_or_dict):
@@ -217,6 +220,21 @@ def intel_graphics(model="unknown", options=None):
     """
     opts = ["-device=intel_graphics", "-model=%s" % model, "-thread_warp_size=16"]
     opts = _merge_opts(opts, options)
+    return _ffi_api.TargetCreate("opencl", *opts)
+
+
+def vivante(model="unknown", options=None):
+    """Returns an vivante target.
+
+    Parameters
+    ----------
+    model: str
+        The model of this device
+    options : str or list of str
+        Additional options
+    """
+    opts = ["-device=vivante", "-model=%s" % model]
+    opts = _merge_opts(opts, options)
     return Target(" ".join(["opencl"] + opts))
 
 
@@ -328,6 +346,30 @@ def bifrost(model="unknown", options=None):
     opts = ["-device=bifrost", "-model=%s" % model]
     opts = _merge_opts(opts, options)
     return Target(" ".join(["opencl"] + opts))
+
+
+def csky_cpu(model="unknown", options=None):
+    """ For csky cpu """
+    import logging
+
+    logger = logging.getLogger("topi")
+    # logger.error("========== create csky target ==========")
+    opts = [
+        "-device=csky_cpu",
+        "-libs=csinn",
+        # "-target=csky-unknown-linux"
+    ]
+    opts = _merge_opts(opts, options)
+    return _api_internal._TargetCreate("llvm", *opts)
+
+
+def csinn(model="unknown", options=None):
+    import logging
+
+    logger = logging.getLogger("topi")
+    # logger.error("========== create csinn target ==========")
+    opts = ["-device=csinn"]
+    return _api_internal._TargetCreate("llvm", *opts)
 
 
 def hexagon(cpu_ver="v66", sim_args=None, llvm_args=None, hvx=128):

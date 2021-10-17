@@ -86,6 +86,35 @@ def conv2d_transpose_nchw_preprocess(data, kernel, strides, padding, out_dtype, 
     return data_pad, kernel_transform
 
 
+def depthwise_conv2d_transpose_nchw_preprocess(
+    data, kernel, strides, padding, out_dtype, output_padding
+):
+    """Preprocess data and kernel to make the compute pattern
+    of conv2d_transpose the same as conv2d"""
+    batch, in_c, in_h, in_w = data.shape
+    _, out_c, filter_h, filter_w = kernel.shape
+    stride_h, stride_w = strides
+    opad_h, opad_w = output_padding
+    assert opad_h < stride_h and opad_w < stride_w
+    # dilate data
+    data_dilate = dilate(data, [1, 1, stride_h, stride_w], name="data_dilate")
+    # pad data
+    fpad_top, fpad_left, fpad_bottom, fpad_right = get_pad_tuple(padding, (filter_h, filter_w))
+    bpad_top = filter_h - 1 - fpad_top
+    bpad_bottom = filter_h - 1 - fpad_bottom + opad_h
+    bpad_left = filter_w - 1 - fpad_left
+    bpad_right = filter_w - 1 - fpad_right + opad_w
+    data_pad = pad(
+        data_dilate, [0, 0, bpad_top, bpad_left], [0, 0, bpad_bottom, bpad_right], name="data_pad"
+    )
+    # transform kernel layout from IOHW to OIHW, and rotate kernel by 180 degrees
+    # kernel_transform = te.compute((out_c, in_c, filter_h, filter_w), \
+    #                               lambda o, i, h, w: kernel[i][o][filter_h-1-h][filter_w-1-w], \
+    #                               name='kernel_transform')
+
+    return data_pad, kernel
+
+
 def declaration_conv2d_transpose_impl(data, kernel, strides, padding, out_dtype, output_padding):
     """Implementation of conv2d transpose"""
     data_pad, kernel_transform = conv2d_transpose_nchw_preprocess(

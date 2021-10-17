@@ -408,10 +408,10 @@ class AttrCvt(object):
                     "Attribute %s in operator %s is not" + " supported.", k, op_name
                 )
             if k in self._disables:
-                logging.warning("Attribute %s is disabled in relay.sym.%s", k, op_name)
+                logging.info("Attribute %s is disabled in relay.sym.%s", k, op_name)
             elif k in self._ignores:
                 if k != "tvm_custom":
-                    logging.warning("Attribute %s is ignored in relay.sym.%s", k, op_name)
+                    logging.info("Attribute %s is ignored in relay.sym.%s", k, op_name)
             elif k in self._transforms:
                 new_name, defaults, transform = self._parse_default(self._transforms[k])
                 if defaults is None:
@@ -427,6 +427,7 @@ class AttrCvt(object):
                 new_attrs[k] = attrs[k]
         # add extras
         new_attrs.update(self._extras)
+        logging.debug("get relay op: %s", op_name)
         return get_relay_op(op_name)(*inputs, **new_attrs)
 
     def _parse_default(self, target):

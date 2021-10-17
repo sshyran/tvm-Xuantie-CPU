@@ -54,6 +54,8 @@ from . import vision
 from . import image
 from . import sparse
 from . import hls
+from . import csinn
+from . import vivante
 
 # error reporting
 from .util import InvalidShapeError

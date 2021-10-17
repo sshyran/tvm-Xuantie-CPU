@@ -100,6 +100,7 @@ class GraphModuleDebug(graph_runtime.GraphModule):
         self._dump_path = None
         self._get_output_by_layer = module["get_output_by_layer"]
         self._run_individual = module["run_individual"]
+        self._hhb_individual = module["hhb_individual"]
         graph_runtime.GraphModule.__init__(self, module)
         self._create_debug_env(graph_json_str, ctx)
 
@@ -176,6 +177,22 @@ class GraphModuleDebug(graph_runtime.GraphModule):
 
         """
         self.debug_datum._time_list = [[float(t) * 1e-6] for t in self.run_individual(10, 1, 1)]
+        for i, node in enumerate(self.debug_datum.get_graph_nodes()):
+            num_outputs = self.debug_datum.get_graph_node_output_num(node)
+            for j in range(num_outputs):
+                out_tensor = self._get_output_by_layer(i, j)
+                out_tensor = array(out_tensor)
+                self.debug_datum._output_tensor_list.append(out_tensor)
+
+    def run_hhb(self):
+        """Execute the node specified with index will be executed.
+        Each debug output will be copied to the buffer
+        Time consumed for each execution will be set as debug output.
+
+        """
+        self.debug_datum._output_tensor_list.clear()
+        self._hhb_individual()
+
         for i, node in enumerate(self.debug_datum.get_graph_nodes()):
             num_outputs = self.debug_datum.get_graph_node_output_num(node)
             for j in range(num_outputs):

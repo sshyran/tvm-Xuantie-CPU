@@ -20,6 +20,7 @@ Caffe testcases
 ====================
 This article is a test script to test Caffe operator with Relay.
 """
+from __future__ import print_function
 import os
 
 os.environ["GLOG_minloglevel"] = "2"
@@ -30,9 +31,15 @@ logging.basicConfig(level=logging.ERROR)
 
 import numpy as np
 from google.protobuf import text_format
-import caffe
-from caffe import layers as L, params as P
-from caffe.proto import caffe_pb2 as pb
+
+try:
+    import caffe
+
+    # from caffe.proto import caffe_pb2 as pb
+    from caffe import layers as L, params as P
+    from caffe.proto import caffe_pb2 as pb
+except ImportError:
+    print("There is no Caffe found at current python environment.")
 
 import tvm
 from tvm import relay
@@ -764,6 +771,93 @@ def test_forward_TanH():
 
 
 #######################################################################
+# Permute
+# -----------
+
+
+def _test_permute(data, **kwargs):
+    """ One iteration of Permute. """
+    _test_op(data, L.Permute, "Permute", **kwargs)
+
+
+def test_forward_Permute():
+    """ Permute """
+    _test_permute(np.random.rand(1, 3, 10, 10).astype(np.float32), order=[0, 2, 3, 1])
+    _test_permute(np.random.rand(1, 3, 10, 10).astype(np.float32), order=[1, 2, 3, 0])
+    _test_permute(np.random.rand(3, 10, 10).astype(np.float32), order=[1, 2, 0])
+    _test_permute(np.random.rand(3, 10).astype(np.float32), order=[1, 0])
+
+
+#######################################################################
+# PriorBox
+# -----------
+
+
+def _test_priorbox(data, **kwargs):
+    """ One iteration of PriorBox """
+    shape_list = list()
+    if isinstance(data, (list, tuple)):
+        for d in data:
+            shape_list.extend(list(d.shape))
+    else:
+        shape_list = list(data.shape)
+
+    n = caffe.NetSpec()
+    n.data = L.Input(input_param={"shape": {"dim": list(data.shape)}})
+
+    n.conv1 = L.Convolution(
+        n.data,
+        num_output=20,
+        bias_term=True,
+        pad=0,
+        kernel_size=3,
+        stride=2,
+        dilation=1,
+        weight_filler=dict(type="xavier"),
+        bias_filler=dict(type="xavier"),
+    )
+    n.relu1 = L.ReLU(n.conv1)
+    n.output = L.PriorBox(n.conv1, n.data, **kwargs)
+
+    # obtain the .caffemodel file and .prototxt file
+    (proto_file, blob_file, solver_file) = _gen_filename_str("PriorBox", shape_list, **kwargs)
+    _gen_model_files(n, proto_file, blob_file, solver_file)
+    # run model in Caffe
+    caffe_out = _run_caffe(data, proto_file, blob_file)
+    # run model in TVM
+    tvm_out = _run_tvm(data, proto_file, blob_file)
+    _compare_caffe_tvm(caffe_out, tvm_out)
+
+
+def test_forward_PriorBox():
+    """ PriorBox """
+    data = np.random.rand(1, 3, 224, 224).astype(np.float32)
+
+    _test_priorbox(
+        data,
+        prior_box_param=dict(
+            min_size=60.0,
+            aspect_ratio=2.0,
+            flip=True,
+            clip=False,
+            variance=[0.1, 0.1, 0.2, 0.2],
+            offset=0.5,
+        ),
+    )
+
+
+#######################################################################
+# (todo)
+# Normalize
+# Proposal
+# Python
+# Resize
+# ROIPooling
+# Upsample
+# (to fix)
+# Scale
+# -----------
+#######################################################################
 # Mobilenetv2
 # -----------
 
@@ -835,15 +929,12 @@ def _test_resnet50(data):
     data_process = data - mean_val
     data_process = data_process.astype(np.float32)
 
-    proto_file_url = (
-        "https://github.com/fernchen/CaffeModels/raw/" "master/resnet/ResNet-50-deploy.prototxt"
+    proto_file = os.path.join(
+        CURRENT_DIR, "../../../../../", "ai-bench/net/caffe/resnet/resnet50.prototxt"
     )
-    blob_file_url = (
-        "https://github.com/fernchen/CaffeModels/raw/" "master/resnet/ResNet-50-model.caffemodel"
+    blob_file = os.path.join(
+        CURRENT_DIR, "../../../../../", "ai-bench/net/caffe/resnet/resnet50.caffemodel"
     )
-
-    proto_file = download_testdata(proto_file_url, "resnet50.prototxt", module="model")
-    blob_file = download_testdata(blob_file_url, "resnet50.caffemodel", module="model")
 
     _test_network(data_process, proto_file, blob_file)
 
@@ -883,6 +974,33 @@ def test_forward_Inceptionv1():
     _test_inceptionv1(data)
 
 
+#######################################################################
+# SSDMobilenetv1
+# -----------
+
+
+def _test_ssdmobilentv1(data):
+    """ One iteration of SSDMobilenetv1 """
+    proto_file = os.path.join(
+        CURRENT_DIR, "../../../../../", "ai-bench/net/caffe/ssd/ssdmobilenetv1.prototxt"
+    )
+    blob_file = os.path.join(
+        CURRENT_DIR, "../../../../../", "ai-bench/net/caffe/ssd/ssdmobilenetv1.caffemodel"
+    )
+    # run model in Caffe
+    caffe_out = _run_caffe(data, proto_file, blob_file)
+    # run model in TVM
+    tvm_out = _run_tvm(data, proto_file, blob_file)
+    for i in caffe_out.keys():
+        tvm.testing.assert_allclose(caffe_out[i], tvm_out[i], rtol=1e-4, atol=1e-3)
+
+
+def test_forward_SSDMobilenetv1():
+    """ SSDMobilenetv1 """
+    data = np.random.randint(0, 256, size=(1, 3, 300, 300)).astype(np.float32)
+    _test_ssdmobilentv1(data)
+
+
 if __name__ == "__main__":
     # NN
     test_forward_Convolution()
@@ -912,9 +1030,14 @@ if __name__ == "__main__":
     test_forward_Concat()
     test_forward_Crop()
     test_forward_Slice()
+    test_forward_Permute()
+
+    # Image Processing
+    test_forward_PriorBox()
 
     # End to End
     test_forward_Mobilenetv2()
     test_forward_Alexnet()
     test_forward_Resnet50()
     test_forward_Inceptionv1()
+    test_forward_SSDMobilenetv1()

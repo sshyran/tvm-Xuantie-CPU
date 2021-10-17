@@ -625,6 +625,8 @@ class TempExpr : public Expr {
   TVM_DEFINE_OBJECT_REF_METHODS(TempExpr, RelayExpr, TempExprNode);
 };
 
+std::string dump_ir(const ObjectRef& node);
+
 }  // namespace relay
 }  // namespace tvm
 #endif  // TVM_RELAY_EXPR_H_

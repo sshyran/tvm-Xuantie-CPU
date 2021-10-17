@@ -168,7 +168,7 @@ def conv2d_strategy_cpu(attrs, inputs, out_type, target):
     else:  # group_conv2d
         if layout == "NCHW":
             assert kernel_layout == "OIHW"
-            logger.warning("group_conv2d is not optimized for x86.")
+            #            logger.warning("group_conv2d is not optimized for x86.")
             strategy.add_implementation(
                 wrap_compute_conv2d(topi.nn.group_conv2d_nchw, has_groups=True),
                 wrap_topi_schedule(topi.generic.schedule_group_conv2d_nchw),
@@ -227,13 +227,24 @@ def conv2d_transpose_strategy_cpu(attrs, inputs, out_type, target):
     groups = attrs.groups
     assert layout == "NCHW", "only support nchw for now"
     assert dilation == (1, 1), "not support dilate now"
-    assert groups == 1, "only support groups == 1 for now"
     strategy = _op.OpStrategy()
-    strategy.add_implementation(
-        wrap_compute_conv2d_transpose(topi.x86.conv2d_transpose_nchw),
-        wrap_topi_schedule(topi.x86.schedule_conv2d_transpose_nchw),
-        name="conv2d_transpose_nchw.x86",
-    )
+    ic = get_const_tuple(inputs[0].shape)[1]
+    oc = get_const_tuple(inputs[1].shape)[0]
+
+    if groups == oc == ic:
+        strategy.add_implementation(
+            wrap_compute_conv2d_transpose(topi.x86.depthwise_conv2d_transpose_nchw),
+            wrap_topi_schedule(topi.x86.schedule_depthwise_conv2d_transpose_nchw),
+            name="depthwise_conv2d_transpose_nchw.x86",
+        )
+    else:
+        assert groups == 1, "only support groups == 1 for now"
+        strategy.add_implementation(
+            wrap_compute_conv2d_transpose(topi.x86.conv2d_transpose_nchw),
+            wrap_topi_schedule(topi.x86.schedule_conv2d_transpose_nchw),
+            name="conv2d_transpose_nchw.x86",
+        )
+
     return strategy
 
 

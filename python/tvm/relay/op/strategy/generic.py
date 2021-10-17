@@ -87,6 +87,7 @@ def schedule_reduce(attrs, outs, target):
 _op._schedule_injective = schedule_injective
 _op._schedule_reduce = schedule_reduce
 
+
 # concatenate
 @generic_func
 def schedule_concatenate(attrs, outs, target):
@@ -927,6 +928,270 @@ def nms_strategy(attrs, inputs, out_type, target):
         wrap_compute_nms(topi.vision.non_max_suppression),
         wrap_topi_schedule(topi.generic.schedule_nms),
         name="nms.generic",
+    )
+    return strategy
+
+
+# psroipooling
+def wrap_compute_psroipooling(topi_compute):
+    """wrap psroipooling topi compute"""
+
+    def _compute_psroipooling(attrs, inputs, out_type):
+        output_dim = get_const_int(attrs.output_dim)
+        group_size = get_const_int(attrs.group_size)
+        spatial_scale = get_const_float(attrs.spatial_scale)
+        return [topi_compute(inputs[0], inputs[1], output_dim, group_size, spatial_scale)]
+
+    return _compute_psroipooling
+
+
+@override_native_generic_func("psroipooling_strategy")
+def psroipooling_strategy(attrs, inputs, out_type, target):
+    """roi_align generic strategy"""
+    strategy = _op.OpStrategy()
+    strategy.add_implementation(
+        wrap_compute_psroipooling(topi.vision.psroipooling),
+        wrap_topi_schedule(topi.generic.schedule_psroipooling),
+        name="psroipooling.generic",
+    )
+    return strategy
+
+
+# max_pool2d_location
+def wrap_compute_max_pool2d_location(topi_compute):
+    """wrap max_pool2d_location topi compute"""
+
+    def _compute_max_pool2d_location(attrs, inputs, out_type):
+        pool_size = attrs.pool_size
+        strides = attrs.strides
+        padding = attrs.padding
+        ceil_mode = attrs.ceil_mode
+        layout = attrs.layout
+        return [topi_compute(inputs[0], pool_size, strides, padding, layout, ceil_mode)]
+
+    return _compute_max_pool2d_location
+
+
+@override_native_generic_func("max_pool2d_location_strategy")
+def max_pool2d_location_strategy(attrs, inputs, out_type, target):
+    """max_pool2d_location generic strategy"""
+    strategy = _op.OpStrategy()
+    strategy.add_implementation(
+        wrap_compute_max_pool2d_location(topi.vision.max_pool2d_location),
+        wrap_topi_schedule(topi.generic.schedule_max_pool2d_location),
+        name="max_pool2d_location.generic",
+    )
+    return strategy
+
+
+# invert_permutation
+def wrap_compute_invert_permutation(topi_compute):
+    """wrap invert_permutation topi compute"""
+
+    def _compute_invert_permutation(attrs, inputs, out_type):
+        return [topi_compute(inputs[0])]
+
+    return _compute_invert_permutation
+
+
+@override_native_generic_func("invert_permutation_strategy")
+def invert_permutation_strategy(attrs, inputs, out_type, target):
+    """invert_permutation generic strategy"""
+    strategy = _op.OpStrategy()
+    strategy.add_implementation(
+        wrap_compute_invert_permutation(topi.vision.invert_permutation),
+        wrap_topi_schedule(topi.generic.schedule_invert_permutation),
+        name="invert_permutation.generic",
+    )
+    return strategy
+
+
+# categorical
+def wrap_compute_categorical(topi_compute):
+    """wrap categorical topi compute"""
+
+    def _compute_categorical(attrs, inputs, out_type):
+        num_samples = attrs.num_samples
+        seed = attrs.seed
+        seed2 = attrs.seed2
+        return [topi_compute(inputs[0], num_samples, seed, seed2)]
+
+    return _compute_categorical
+
+
+@override_native_generic_func("categorical_strategy")
+def categorical_strategy(attrs, inputs, out_type, target):
+    """categorical generic strategy"""
+    strategy = _op.OpStrategy()
+    strategy.add_implementation(
+        wrap_compute_categorical(topi.vision.categorical),
+        wrap_topi_schedule(topi.generic.schedule_categorical),
+        name="categorical.generic",
+    )
+    return strategy
+
+
+# segment_max
+def wrap_compute_segment_max(topi_compute):
+    """wrap segment_max topi compute"""
+
+    def _compute_segment_max(attrs, inputs, out_type):
+        length = attrs.length
+        return [topi_compute(inputs[0], inputs[1], length)]
+
+    return _compute_segment_max
+
+
+@override_native_generic_func("segment_max_strategy")
+def segment_max_strategy(attrs, inputs, out_type, target):
+    """segment_max generic strategy"""
+    strategy = _op.OpStrategy()
+    strategy.add_implementation(
+        wrap_compute_segment_max(topi.vision.segment_max),
+        wrap_topi_schedule(topi.generic.schedule_segment_max),
+        name="segment_max.generic",
+    )
+    return strategy
+
+
+# segment_sum
+def wrap_compute_segment_sum(topi_compute):
+    """wrap segment_sum topi compute"""
+
+    def _compute_segment_sum(attrs, inputs, out_type):
+        length = attrs.length
+        return [topi_compute(inputs[0], inputs[1], length)]
+
+    return _compute_segment_sum
+
+
+@override_native_generic_func("segment_sum_strategy")
+def segment_sum_strategy(attrs, inputs, out_type, target):
+    """segment_sum generic strategy"""
+    strategy = _op.OpStrategy()
+    strategy.add_implementation(
+        wrap_compute_segment_sum(topi.vision.segment_sum),
+        wrap_topi_schedule(topi.generic.schedule_segment_sum),
+        name="segment_sum.generic",
+    )
+    return strategy
+
+
+# segment_mean
+def wrap_compute_segment_mean(topi_compute):
+    """wrap segment_mean topi compute"""
+
+    def _compute_segment_mean(attrs, inputs, out_type):
+        length = attrs.length
+        return [topi_compute(inputs[0], inputs[1], length)]
+
+    return _compute_segment_mean
+
+
+@override_native_generic_func("segment_mean_strategy")
+def segment_mean_strategy(attrs, inputs, out_type, target):
+    """segment_mean generic strategy"""
+    strategy = _op.OpStrategy()
+    strategy.add_implementation(
+        wrap_compute_segment_mean(topi.vision.segment_mean),
+        wrap_topi_schedule(topi.generic.schedule_segment_mean),
+        name="segment_mean.generic",
+    )
+    return strategy
+
+
+# segment_prod
+def wrap_compute_segment_prod(topi_compute):
+    """wrap segment_prod topi compute"""
+
+    def _compute_segment_prod(attrs, inputs, out_type):
+        length = attrs.length
+        return [topi_compute(inputs[0], inputs[1], length)]
+
+    return _compute_segment_prod
+
+
+@override_native_generic_func("segment_prod_strategy")
+def segment_prod_strategy(attrs, inputs, out_type, target):
+    """segment_prod generic strategy"""
+    strategy = _op.OpStrategy()
+    strategy.add_implementation(
+        wrap_compute_segment_prod(topi.vision.segment_prod),
+        wrap_topi_schedule(topi.generic.schedule_segment_prod),
+        name="segment_prod.generic",
+    )
+    return strategy
+
+
+# segment_min
+def wrap_compute_segment_min(topi_compute):
+    """wrap segment_min topi compute"""
+
+    def _compute_segment_min(attrs, inputs, out_type):
+        length = attrs.length
+        return [topi_compute(inputs[0], inputs[1], length)]
+
+    return _compute_segment_min
+
+
+@override_native_generic_func("segment_min_strategy")
+def segment_min_strategy(attrs, inputs, out_type, target):
+    """segment_min generic strategy"""
+    strategy = _op.OpStrategy()
+    strategy.add_implementation(
+        wrap_compute_segment_min(topi.vision.segment_min),
+        wrap_topi_schedule(topi.generic.schedule_segment_min),
+        name="segment_min.generic",
+    )
+    return strategy
+
+
+# standard_normal
+def wrap_compute_standard_normal(topi_compute):
+    """wrap standard_normal topi compute"""
+
+    def _compute_standard_normal(attrs, inputs, out_type):
+        size = attrs.size
+        return [topi_compute(inputs[0], inputs[1], size)]
+
+    return _compute_standard_normal
+
+
+@override_native_generic_func("standard_normal_strategy")
+def standard_normal_strategy(attrs, inputs, out_type, target):
+    """standard_normal generic strategy"""
+    strategy = _op.OpStrategy()
+    strategy.add_implementation(
+        wrap_compute_standard_normal(topi.vision.standard_normal),
+        wrap_topi_schedule(topi.generic.schedule_standard_normal),
+        name="standard_normal.generic",
+    )
+    return strategy
+
+
+# unpooling
+def wrap_compute_unpooling(topi_compute):
+    """wrap unpooling topi compute"""
+
+    def _compute_unpooling(attrs, inputs, out_type):
+        scale_h = attrs.scale_h
+        scale_w = attrs.scale_w
+        pad_out_h = attrs.pad_out_h
+        pad_out_w = attrs.pad_out_w
+        assert attrs.layout == "NCHW", "layout of unpooling must be NCHW"
+        return [topi_compute(inputs[0], inputs[1], scale_h, scale_w, pad_out_h, pad_out_w)]
+
+    return _compute_unpooling
+
+
+@override_native_generic_func("unpooling_strategy")
+def unpooling_strategy(attrs, inputs, out_type, target):
+    """unpooling generic strategy"""
+    strategy = _op.OpStrategy()
+    strategy.add_implementation(
+        wrap_compute_unpooling(topi.vision.unpooling),
+        wrap_topi_schedule(topi.generic.schedule_unpooling),
+        name="unpooling.generic",
     )
     return strategy
 

@@ -20,4 +20,4 @@
 # check lastest change, for squash merge into master
 ./tests/lint/git-clang-format.sh HEAD~1
 # chekc against origin/master for PRs.
-./tests/lint/git-clang-format.sh origin/master
+./tests/lint/git-clang-format.sh origin/source-base-v0.7.0

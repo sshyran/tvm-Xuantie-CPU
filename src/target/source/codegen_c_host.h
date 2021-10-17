@@ -64,6 +64,7 @@ class CodeGenCHost final : public CodeGenC {
 
  private:
   std::string module_name_;
+  std::string set_device_name_;
   /* \brief tracks declared global variables which live despite GetUniqueName */
   std::set<std::string> declared_globals_;
   /* \brief names of the functions declared in this module */

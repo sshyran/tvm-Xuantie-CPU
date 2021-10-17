@@ -378,6 +378,10 @@ reg.register_pattern("nn.max_pool1d", OpPattern.OUT_ELEMWISE_FUSABLE)
 reg.register_schedule("nn.max_pool2d", strategy.schedule_pool)
 reg.register_pattern("nn.max_pool2d", OpPattern.OUT_ELEMWISE_FUSABLE)
 
+# max_pool2d_with_argmax
+reg.register_schedule("nn.max_pool2d_with_argmax", strategy.schedule_pool)
+reg.register_pattern("nn.max_pool2d_with_argmax", OpPattern.OUT_ELEMWISE_FUSABLE)
+
 
 # max_pool3d
 reg.register_schedule("nn.max_pool3d", strategy.schedule_pool)

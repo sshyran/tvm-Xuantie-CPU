@@ -502,6 +502,8 @@ TVM_REGISTER_GLOBAL("transform.EnterPassContext").set_body_typed(PassContext::In
 
 TVM_REGISTER_GLOBAL("transform.ExitPassContext").set_body_typed(PassContext::Internal::ExitScope);
 
+std::string dump_ir(const ObjectRef& node) { return AsText(node, false, NULL); }
+
 Pass PrintIR(String header, bool show_meta_data) {
   auto pass_func = [header, show_meta_data](IRModule mod, const PassContext& ctx) {
     LOG(INFO) << "PrintIR(" << header << "):\n" << AsText(mod, show_meta_data);

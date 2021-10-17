@@ -19,6 +19,7 @@
 .*\.log
 .*\.interp
 .*\.tokens
+.*\.tensor
 
 # Generated modules
 .*\.egg-info
@@ -48,3 +49,6 @@ MANIFEST
 .bash_history
 rat-excludes
 Cargo.lock
+
+.*\.prototxt
+.*\.caffemodel

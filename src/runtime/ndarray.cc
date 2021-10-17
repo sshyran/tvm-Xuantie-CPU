@@ -186,6 +186,19 @@ NDArray NDArray::CreateView(std::vector<int64_t> shape, DLDataType dtype) {
 
 DLManagedTensor* NDArray::ToDLPack() const { return Internal::ToDLPack(get_mutable()); }
 
+NDArray NDArray::Duplicate() {
+  NDArray ret = Internal::Create(get_mutable()->shape_, get_mutable()->dl_tensor.dtype,
+                                 get_mutable()->dl_tensor.ctx);
+
+  size_t size = GetDataSize(ret.get_mutable()->dl_tensor);
+  size_t alignment = GetDataAlignment(ret.get_mutable()->dl_tensor);
+  ret.get_mutable()->dl_tensor.data =
+      DeviceAPI::Get(ret->ctx)->AllocDataSpace(ret->ctx, size, alignment, ret->dtype);
+
+  CopyFromTo(&(get_mutable()->dl_tensor), &(ret.get_mutable()->dl_tensor));
+  return ret;
+}
+
 NDArray NDArray::Empty(std::vector<int64_t> shape, DLDataType dtype, DLContext ctx) {
   NDArray ret = Internal::Create(shape, dtype, ctx);
   // setup memory content
@@ -244,6 +257,12 @@ void NDArray::CopyFromTo(const DLTensor* from, DLTensor* to, TVMStreamHandle str
 std::vector<int64_t> NDArray::Shape() const { return get_mutable()->shape_; }
 runtime::DataType NDArray::DataType() const {
   return runtime::DataType(get_mutable()->dl_tensor.dtype);
+}
+
+int64_t NDArray::Length() const {
+  const DLTensor* handle = &get_mutable()->dl_tensor;
+  size_t arr_size = GetDataSize(*handle);
+  return arr_size;
 }
 
 TVM_REGISTER_OBJECT_TYPE(NDArray::Container);

@@ -84,6 +84,9 @@ class GraphRuntimeDebug : public GraphRuntime {
                       .count();
               time_per_op[index] += op_duration * 1e6;  // us
             }
+
+            NDArray t = data_entry_[index].Duplicate();
+            layers_outputs.push_back(t);
           }
         }
         tend = std::chrono::high_resolution_clock::now();
@@ -108,12 +111,32 @@ class GraphRuntimeDebug : public GraphRuntime {
     return os.str();
   }
 
+  void HHBRunIndividual() {
+    layers_outputs.clear();
+    for (size_t index = 0; index < op_execs_.size(); ++index) {
+      if (op_execs_[index]) {
+        op_execs_[index]();
+      }
+      const auto& inode = nodes_[index];
+      if (inode.op_type == "null") {
+        NDArray t = data_entry_[entry_id(index, 0)].Duplicate();
+        layers_outputs.push_back(t);
+      } else {
+        for (uint32_t e = 0; e < inode.param.num_outputs; ++e) {
+          uint32_t eid = entry_id(index, e);
+          NDArray t = data_entry_[eid].Duplicate();
+          layers_outputs.push_back(t);
+        }
+      }
+    }
+  }
+
   /*!
    * \brief Run each operation and get the output.
    * \param index The index of op which needs to be returned.
    * \param eid The Entry id of the op.
    */
-  NDArray GetOutputByLayer(int index, int eid) { return data_entry_[entry_id(index, eid)]; }
+  NDArray GetOutputByLayer(int index, int eid) { return layers_outputs[entry_id(index, eid)]; }
 
   /*!
    * \brief GetFunction Get the function based on input.
@@ -158,6 +181,9 @@ class GraphRuntimeDebug : public GraphRuntime {
 
     data_entry_[eid].CopyTo(data_out);
   }
+
+ protected:
+  std::vector<NDArray> layers_outputs;
 };
 
 /*!
@@ -190,6 +216,9 @@ PackedFunc GraphRuntimeDebug::GetFunction(const std::string& name,
       CHECK_GE(min_repeat_ms, 0);
       *rv = this->RunIndividual(number, repeat, min_repeat_ms);
     });
+  } else if (name == "hhb_individual") {
+    return PackedFunc(
+        [sptr_to_self, this](TVMArgs args, TVMRetValue* rv) { this->HHBRunIndividual(); });
   } else {
     return GraphRuntime::GetFunction(name, sptr_to_self);
   }

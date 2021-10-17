@@ -133,6 +133,11 @@ pygments_style = "sphinx"
 # If true, `todo` and `todoList` produce output, else they produce nothing.
 todo_include_todos = False
 
+# A list of warning types to suppress arbitrary warning messages.
+# suppress_warnings = [
+#     "download.not_readable"
+# ]
+
 # -- Options for HTML output ----------------------------------------------
 
 # The theme is set by the make target
@@ -175,10 +180,10 @@ latex_documents = [
 ]
 
 intersphinx_mapping = {
-    "python": ("https://docs.python.org/{.major}".format(sys.version_info), None),
-    "numpy": ("https://numpy.org/doc/stable", None),
-    "scipy": ("https://docs.scipy.org/doc/scipy/reference", None),
-    "matplotlib": ("https://matplotlib.org/", None),
+    "python": ("https://docs.python.org/{.major}".format(sys.version_info), "python.inv"),
+    "numpy": ("https://numpy.org/doc/stable", "numpy.inv"),
+    "scipy": ("https://docs.scipy.org/doc/scipy/reference", "scipy.inv"),
+    "matplotlib": ("https://matplotlib.org/", "matplotlib.inv"),
 }
 
 from sphinx_gallery.sorting import ExplicitOrder
@@ -207,11 +212,7 @@ subsection_order = ExplicitOrder(
 sphinx_gallery_conf = {
     "backreferences_dir": "gen_modules/backreferences",
     "doc_module": ("tvm", "numpy"),
-    "reference_url": {
-        "tvm": None,
-        "matplotlib": "https://matplotlib.org/",
-        "numpy": "https://numpy.org/doc/stable",
-    },
+    "reference_url": {"tvm": None, "matplotlib": None, "numpy": None},
     "examples_dirs": examples_dirs,
     "gallery_dirs": gallery_dirs,
     "subsection_order": subsection_order,

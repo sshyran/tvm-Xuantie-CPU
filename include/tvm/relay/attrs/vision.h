@@ -26,6 +26,7 @@
 
 #include <tvm/ir/attrs.h>
 #include <tvm/relay/base.h>
+#include <tvm/relay/expr.h>
 
 #include <string>
 
@@ -208,6 +209,131 @@ struct ProposalAttrs : public tvm::AttrsNode<ProposalAttrs> {
         .describe("Number of top scoring boxes to keep after applying NMS to RPN proposals");
     TVM_ATTR_FIELD(rpn_min_size).set_default(16).describe("Minimum height or width in proposal");
     TVM_ATTR_FIELD(iou_loss).set_default(false).describe("Usage of IoU Loss");
+  }
+};
+
+/*! \brief Attributes used in psroipooling operators */
+struct PSRoIPoolingAttrs : public tvm::AttrsNode<PSRoIPoolingAttrs> {
+  int output_dim;
+  int group_size;
+  double spatial_scale;
+  TVM_DECLARE_ATTRS(PSRoIPoolingAttrs, "relay.attrs.PSRoIPoolingAttrs") {
+    TVM_ATTR_FIELD(output_dim).describe("Output channel size of psroipooling.");
+    TVM_ATTR_FIELD(group_size).describe("Output size of psroipooling.");
+    TVM_ATTR_FIELD(spatial_scale)
+        .describe(
+            "Ratio of input feature map height (or w) to raw image height (or w). "
+            "Equals the reciprocal of total stride in convolutional layers, which should be "
+            "in range (0.0, 1.0]");
+  }
+};
+
+/*! \brief Attributes used in MaxPool2dLocation operators */
+struct MaxPool2dLocationAttrs : public tvm::AttrsNode<MaxPool2dLocationAttrs> {
+  Array<IndexExpr> pool_size;
+  Array<IndexExpr> strides;
+  Array<IndexExpr> padding;
+  bool ceil_mode;
+  std::string layout;
+  TVM_DECLARE_ATTRS(MaxPool2dLocationAttrs, "relay.attrs.MaxPool2dLocationAttrs") {
+    TVM_ATTR_FIELD(pool_size).describe("kernel size of pool.");
+    TVM_ATTR_FIELD(strides).describe("stride size of pool.");
+    TVM_ATTR_FIELD(padding).describe("The padding size");
+    TVM_ATTR_FIELD(ceil_mode).describe("The ceil smodel");
+    TVM_ATTR_FIELD(layout).set_default("NCHW").describe(
+        "Dimension ordering of data and weight. Can be 'NCHW', 'NHWC', etc."
+        "'N', 'C', 'H', 'W' stands for batch, channel, height, and width"
+        "dimensions respectively. Convolution is applied on the 'H' and"
+        "'W' dimensions.");
+  }
+};
+
+/*! \brief Attributes used in Unpooling operators */
+struct UnpoolingAttrs : public tvm::AttrsNode<UnpoolingAttrs> {
+  int scale_h;
+  int scale_w;
+  int pad_out_h;
+  int pad_out_w;
+  std::string layout;
+  TVM_DECLARE_ATTRS(UnpoolingAttrs, "relay.attrs.UnpoolingAttrs") {
+    TVM_ATTR_FIELD(scale_h).describe("Output channel size of psroipooling.");
+    TVM_ATTR_FIELD(scale_w).describe("Output size of psroipooling.");
+    TVM_ATTR_FIELD(pad_out_h).describe("The pad of out data");
+    TVM_ATTR_FIELD(pad_out_w).describe("The pad of out data");
+    TVM_ATTR_FIELD(layout).set_default("NCHW").describe(
+        "Dimension ordering of data and weight. Can be 'NCHW', 'NHWC', etc."
+        "'N', 'C', 'H', 'W' stands for batch, channel, height, and width"
+        "dimensions respectively. Convolution is applied on the 'H' and"
+        "'W' dimensions.");
+  }
+};
+
+/*! \brief Attributes used in extract_image_patches operators */
+struct ExtractImagePatchesAttrs : public tvm::AttrsNode<ExtractImagePatchesAttrs> {
+  Array<IndexExpr> ksizes;
+  Array<IndexExpr> strides;
+  Array<IndexExpr> rates;
+  Array<IndexExpr> padding;
+  std::string layout;
+  TVM_DECLARE_ATTRS(ExtractImagePatchesAttrs, "relay.attrs.ExtractImagePatchesAttrs") {
+    TVM_ATTR_FIELD(ksizes).describe("kernel size.");
+    TVM_ATTR_FIELD(strides).describe("stride size.");
+    TVM_ATTR_FIELD(rates).describe("The dilated size");
+    TVM_ATTR_FIELD(padding).describe("The padding size");
+    TVM_ATTR_FIELD(layout).set_default("NCHW").describe(
+        "Dimension ordering of data and weight. Can be 'NCHW', 'NHWC', etc."
+        "'N', 'C', 'H', 'W' stands for batch, channel, height, and width"
+        "dimensions respectively. Convolution is applied on the 'H' and"
+        "'W' dimensions.");
+  }
+};
+
+/*! \brief Attributes used in extract_image_patches operators */
+struct CategoricalAttrs : public tvm::AttrsNode<CategoricalAttrs> {
+  int32_t num_samples;
+  int32_t seed;
+  int32_t seed2;
+
+  TVM_DECLARE_ATTRS(CategoricalAttrs, "relay.attrs.CategoricalAttrs") {
+    TVM_ATTR_FIELD(num_samples)
+        .describe(" Number of independent samples to draw for each row slice.");
+    TVM_ATTR_FIELD(seed).describe(
+        "If either seed or seed2 is set to be non-zero, the internal random number"
+        "generator is seeded by the given seed.  Otherwise, a random seed is used.");
+    TVM_ATTR_FIELD(seed2).describe(" A second seed to avoid seed collision.");
+  }
+};
+
+/*! \brief Attributes used in SegmentMax operators */
+struct SegmentAttrs : public tvm::AttrsNode<SegmentAttrs> {
+  int32_t length;
+
+  TVM_DECLARE_ATTRS(SegmentAttrs, "relay.attrs.SegmentAttrs") {
+    TVM_ATTR_FIELD(length).describe("The length of output.");
+  }
+};
+
+/*! \brief Attributes used in RandomInt and RandomUniform operators */
+struct RandomAttrs : public tvm::AttrsNode<RandomAttrs> {
+  Expr low;
+  Expr high;
+
+  TVM_DECLARE_ATTRS(RandomAttrs, "relay.attrs.RandomAttrs") {
+    TVM_ATTR_FIELD(low).describe("high must be bigger than low.");
+    TVM_ATTR_FIELD(high).describe("high must be bigger than low.");
+  }
+};
+
+/*! \brief Attributes used in StandardNormal operators */
+struct StandardNormalAttrs : public tvm::AttrsNode<StandardNormalAttrs> {
+  Expr loc;
+  Expr scale;
+  Array<IndexExpr> size;
+
+  TVM_DECLARE_ATTRS(StandardNormalAttrs, "relay.attrs.StandardNormalAttrs") {
+    TVM_ATTR_FIELD(loc).describe("high must be bigger than low.");
+    TVM_ATTR_FIELD(scale).describe("high must be bigger than low.");
+    TVM_ATTR_FIELD(size).describe("size of output.");
   }
 };
 

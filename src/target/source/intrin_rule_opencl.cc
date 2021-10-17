@@ -69,6 +69,13 @@ TVM_REGISTER_GLOBAL("tvm.intrin.rule.opencl.cos").set_body(DispatchPureExtern<Di
 
 TVM_REGISTER_GLOBAL("tvm.intrin.rule.opencl.cosh").set_body(DispatchPureExtern<Direct>);
 
+TVM_REGISTER_GLOBAL("tvm.intrin.rule.opencl.erf").set_body(DispatchPureExtern<Direct>);
+
+TVM_REGISTER_GLOBAL("tvm.intrin.rule.opencl.tan").set_body(DispatchPureExtern<Direct>);
+
+TVM_REGISTER_GLOBAL("tvm.intrin.rule.opencl.atan").set_body(DispatchPureExtern<Direct>);
+
+TVM_REGISTER_GLOBAL("tvm.intrin.rule.opencl.atomic_add").set_body(DispatchPureExtern<Direct>);
 // There is no warp shuffle instruction in standard OpenCL
 // When shuffle is used, we assume it is intel's shuffle extension
 static void DispatchIntelShuffle(const TVMArgs& args, TVMRetValue* rv) {

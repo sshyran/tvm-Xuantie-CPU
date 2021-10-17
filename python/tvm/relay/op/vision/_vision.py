@@ -45,6 +45,50 @@ reg.register_pattern("vision.get_valid_counts", OpPattern.OPAQUE)
 reg.register_strategy("vision.non_max_suppression", strategy.nms_strategy)
 reg.register_pattern("vision.non_max_suppression", OpPattern.OPAQUE)
 
+# psroipooling
+reg.register_strategy("vision.psroipooling", strategy.psroipooling_strategy)
+reg.register_pattern("vision.psroipooling", OpPattern.OPAQUE)
+
+# max_pool2d_location
+reg.register_strategy("vision.max_pool2d_location", strategy.max_pool2d_location_strategy)
+reg.register_pattern("vision.max_pool2d_location", OpPattern.OPAQUE)
+
+# categorical
+reg.register_strategy("vision.categorical", strategy.categorical_strategy)
+reg.register_pattern("vision.categorical", OpPattern.OPAQUE)
+
+# invert_permutation
+reg.register_strategy("vision.invert_permutation", strategy.invert_permutation_strategy)
+reg.register_pattern("vision.invert_permutation", OpPattern.OPAQUE)
+
+# segment_max
+reg.register_strategy("vision.segment_max", strategy.segment_max_strategy)
+reg.register_pattern("vision.segment_max", OpPattern.OPAQUE)
+
+# segment_min
+reg.register_strategy("vision.segment_min", strategy.segment_min_strategy)
+reg.register_pattern("vision.segment_min", OpPattern.OPAQUE)
+
+# segment_sum
+reg.register_strategy("vision.segment_sum", strategy.segment_sum_strategy)
+reg.register_pattern("vision.segment_sum", OpPattern.OPAQUE)
+
+# segment_mean
+reg.register_strategy("vision.segment_mean", strategy.segment_mean_strategy)
+reg.register_pattern("vision.segment_mean", OpPattern.OPAQUE)
+
+# segment_prod
+reg.register_strategy("vision.segment_prod", strategy.segment_prod_strategy)
+reg.register_pattern("vision.segment_prod", OpPattern.OPAQUE)
+
+# standard_normal
+reg.register_strategy("vision.standard_normal", strategy.standard_normal_strategy)
+reg.register_pattern("vision.standard_normal", OpPattern.OPAQUE)
+
+# unpooling
+reg.register_strategy("vision.unpooling", strategy.unpooling_strategy)
+reg.register_pattern("vision.unpooling", OpPattern.OPAQUE)
+
 
 @script
 def _get_valid_counts_shape_func(data_shape):

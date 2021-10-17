@@ -35,7 +35,10 @@
 namespace tvm {
 namespace codegen {
 
-CodeGenCHost::CodeGenCHost() { module_name_ = GetUniqueName("__tvm_module_ctx"); }
+CodeGenCHost::CodeGenCHost() {
+  module_name_ = GetUniqueName("__tvm_module_ctx");
+  set_device_name_ = GetUniqueName(runtime::symbol::tvm_set_device);
+}
 
 void CodeGenCHost::Init(bool output_ssa, bool emit_asserts) {
   emit_asserts_ = emit_asserts;
@@ -43,6 +46,7 @@ void CodeGenCHost::Init(bool output_ssa, bool emit_asserts) {
   decl_stream << "#include \"tvm/runtime/c_runtime_api.h\"\n";
   decl_stream << "#include \"tvm/runtime/c_backend_api.h\"\n";
   decl_stream << "void* " << module_name_ << " = NULL;\n";
+  decl_stream << "static void* " << set_device_name_ << " = NULL;\n";
   CodeGenC::Init(output_ssa);
 }
 
@@ -224,6 +228,10 @@ void CodeGenCHost::VisitExpr_(const CallNode* op, std::ostream& os) {  // NOLINT
       // Still reserve the name among unique names.
       CHECK(GetUniqueName(packed_func_name) == packed_func_name)
           << "Expected name " << packed_func_name << " to not be taken";
+      decl_stream << "static void* " << packed_func_name << " = NULL;\n";
+    }
+    if (func_name != set_device_name_) {
+      packed_func_name = GetUniqueName(func_name + "_packed");
       decl_stream << "static void* " << packed_func_name << " = NULL;\n";
     }
     this->PrintGetFuncFromBackend(func_name, packed_func_name);

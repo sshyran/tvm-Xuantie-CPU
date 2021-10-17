@@ -22,6 +22,7 @@ from .. import cpp
 from .default import default_schedule as _default_schedule
 
 
+@tvm.target.generic_func
 def schedule_reorg(outs):
     """Schedule for reorg
 
@@ -161,6 +162,205 @@ def schedule_roi_pool(outs):
     return _default_schedule(outs, False)
 
 
+@tvm.target.generic_func
+def schedule_psroipooling(outs):
+    """Schedule for psroipooling
+
+    Parameters
+    ----------
+    outs: Array of Tensor
+      The computation graph description of psroipooling
+      in the format of an array of tensors.
+
+    Returns
+    -------
+    s: Schedule
+      The computation schedule for the op.
+    """
+    return _default_schedule(outs, False)
+
+
+@tvm.target.generic_func
+def schedule_max_pool2d_location(outs):
+    """Schedule for pool2d_location
+
+    Parameters
+    ----------
+    outs: Array of Tensor
+      The computation graph description of pool2d_location
+      in the format of an array of tensors.
+
+    Returns
+    -------
+    s: Schedule
+      The computation schedule for the op.
+    """
+    return _default_schedule(outs, False)
+
+
+@tvm.target.generic_func
+def schedule_invert_permutation(outs):
+    """Schedule for invert_permutation
+
+    Parameters
+    ----------
+    outs: Array of Tensor
+      The computation graph description of invert_permutation
+      in the format of an array of tensors.
+
+    Returns
+    -------
+    s: Schedule
+      The computation schedule for the op.
+    """
+    return _default_schedule(outs, False)
+
+
+@tvm.target.generic_func
+def schedule_categorical(outs):
+    """Schedule for categorical
+
+    Parameters
+    ----------
+    outs: Array of Tensor
+      The computation graph description of categorical
+      in the format of an array of tensors.
+
+    Returns
+    -------
+    s: Schedule
+      The computation schedule for the op.
+    """
+    return _default_schedule(outs, False)
+
+
+@tvm.target.generic_func
+def schedule_segment_max(outs):
+    """Schedule for segment_max
+
+    Parameters
+    ----------
+    outs: Array of Tensor
+      The computation graph description of segment_max
+      in the format of an array of tensors.
+
+    Returns
+    -------
+    s: Schedule
+      The computation schedule for the op.
+    """
+    return _default_schedule(outs, False)
+
+
+@tvm.target.generic_func
+def schedule_segment_sum(outs):
+    """Schedule for segment_sum
+
+    Parameters
+    ----------
+    outs: Array of Tensor
+      The computation graph description of segment_sum
+      in the format of an array of tensors.
+
+    Returns
+    -------
+    s: Schedule
+      The computation schedule for the op.
+    """
+    return _default_schedule(outs, False)
+
+
+@tvm.target.generic_func
+def schedule_segment_mean(outs):
+    """Schedule for segment_mean
+
+    Parameters
+    ----------
+    outs: Array of Tensor
+      The computation graph description of segment_mean
+      in the format of an array of tensors.
+
+    Returns
+    -------
+    s: Schedule
+      The computation schedule for the op.
+    """
+    return _default_schedule(outs, False)
+
+
+@tvm.target.generic_func
+def schedule_segment_prod(outs):
+    """Schedule for segment_prod
+
+    Parameters
+    ----------
+    outs: Array of Tensor
+      The computation graph description of segment_prod
+      in the format of an array of tensors.
+
+    Returns
+    -------
+    s: Schedule
+      The computation schedule for the op.
+    """
+    return _default_schedule(outs, False)
+
+
+@tvm.target.generic_func
+def schedule_segment_min(outs):
+    """Schedule for segment_min
+
+    Parameters
+    ----------
+    outs: Array of Tensor
+      The computation graph description of segment_min
+      in the format of an array of tensors.
+
+    Returns
+    -------
+    s: Schedule
+      The computation schedule for the op.
+    """
+    return _default_schedule(outs, False)
+
+
+@tvm.target.generic_func
+def schedule_standard_normal(outs):
+    """Schedule for standard_normal
+
+    Parameters
+    ----------
+    outs: Array of Tensor
+      The computation graph description of standard_normal
+      in the format of an array of tensors.
+
+    Returns
+    -------
+    s: Schedule
+      The computation schedule for the op.
+    """
+    return _default_schedule(outs, False)
+
+
+@tvm.target.generic_func
+def schedule_unpooling(outs):
+    """Schedule for unpooling
+
+    Parameters
+    ----------
+    outs: Array of Tensor
+      The computation graph description of unpooling
+      in the format of an array of tensors.
+
+    Returns
+    -------
+    s: Schedule
+      The computation schedule for the op.
+    """
+    return _default_schedule(outs, False)
+
+
+@tvm.target.generic_func
 def schedule_proposal(outs):
     """Schedule for proposal operator.
 

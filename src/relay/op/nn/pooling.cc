@@ -29,6 +29,7 @@
 #include <tvm/tir/data_layout.h>
 #include <tvm/topi/nn/pooling.h>
 
+#include <string>
 #include <vector>
 
 #include "../../transforms/infer_layout_util.h"
@@ -56,6 +57,49 @@ Array<Array<Layout> > PoolInferCorrectLayout(const Attrs& attrs,
 
   Layout inferred_layout(params->layout);
   return Array<Array<Layout> >{{inferred_layout}, {inferred_layout}};
+}
+
+template <typename T>
+Expr MakeMaxPool(Expr data, Array<IndexExpr> pool_size, Array<IndexExpr> strides,
+                 Array<IndexExpr> padding, std::string layout, bool ceil_mode,
+                 std::string op_name) {
+  auto attrs = make_object<T>();
+  attrs->pool_size = std::move(pool_size);
+  attrs->strides = std::move(strides);
+  attrs->padding = std::move(padding);
+  attrs->layout = std::move(layout);
+  attrs->ceil_mode = ceil_mode;
+  static const Op& op = Op::Get(op_name);
+  return Call(op, {data}, Attrs(attrs), {});
+}
+
+template <typename T>
+Expr MakeMaxPoolWithArgmax(Expr data, Array<IndexExpr> pool_size, Array<IndexExpr> strides,
+                           Array<IndexExpr> padding, std::string layout, bool ceil_mode,
+                           std::string op_name) {
+  auto attrs = make_object<T>();
+  attrs->pool_size = std::move(pool_size);
+  attrs->strides = std::move(strides);
+  attrs->padding = std::move(padding);
+  attrs->layout = std::move(layout);
+  attrs->ceil_mode = ceil_mode;
+  static const Op& op = Op::Get(op_name);
+  return Call(op, {data}, Attrs(attrs), {});
+}
+
+template <typename T>
+Expr MakeAvgPool(Expr data, Array<IndexExpr> pool_size, Array<IndexExpr> strides,
+                 Array<IndexExpr> padding, std::string layout, bool ceil_mode,
+                 bool count_include_pad, std::string op_name) {
+  auto attrs = make_object<T>();
+  attrs->pool_size = std::move(pool_size);
+  attrs->strides = std::move(strides);
+  attrs->padding = std::move(padding);
+  attrs->layout = std::move(layout);
+  attrs->ceil_mode = ceil_mode;
+  attrs->count_include_pad = count_include_pad;
+  static const Op& op = Op::Get(op_name);
+  return Call(op, {data}, Attrs(attrs), {});
 }
 
 template <typename AttrType>
@@ -176,6 +220,42 @@ TVM_REGISTER_GLOBAL("relay.op.nn._make.max_pool2d")
     });
 
 RELAY_REGISTER_OP("nn.max_pool2d")
+    .describe(R"code(Max pooling operation for two dimensional data.
+
+- **data**: This depends on the `layout` parameter. Input is 4D array of shape
+            (batch_size, channels, height, width) if `layout` is `NCHW`.
+- **out**: This depends on the `layout` parameter. Output is 4D array of shape
+           (batch_size, channels, out_height, out_width)  if `layout` is `NCHW`.
+           out_height and out_width are calculated as::
+
+               out_height = floor((height+padding[0]+padding[2]-pool_size[0])/strides[0])+1
+               out_width = floor((width+padding[1]+padding[3]-pool_size[1])/strides[1])+1
+
+           where padding will be an expanded array based on number of values passed as::
+               one int : all sides same padding used.
+               two int : bottom, right use same as top and left.
+               four int: padding width in the order of (top, left, bottom, right).
+
+           When `ceil_mode` is `True`, ceil will be used instead of floor in this
+           equation.
+
+)code" TVM_ADD_FILELINE)
+    .set_attrs_type<MaxPool2DAttrs>()
+    .set_num_inputs(1)
+    .add_argument("data", "Tensor", "The input tensor.")
+    .set_support_level(2)
+    .add_type_rel("MaxPool2D", Pool2DRel<MaxPool2DAttrs>)
+    .set_attr<FInferCorrectLayout>("FInferCorrectLayout", PoolInferCorrectLayout<MaxPool2DAttrs>)
+    .set_attr<FTVMCompute>("FTVMCompute", Pool2DCompute<MaxPool2DAttrs, topi::nn::kMaxPool>);
+
+TVM_REGISTER_GLOBAL("relay.op.nn._make.max_pool2d_with_argmax")
+    .set_body_typed([](Expr data, Array<IndexExpr> pool_size, Array<IndexExpr> strides,
+                       Array<IndexExpr> padding, std::string layout, bool ceil_mode) {
+      return MakeMaxPoolWithArgmax<MaxPool2DAttrs>(data, pool_size, strides, padding, layout,
+                                                   ceil_mode, "nn.max_pool2d_with_argmax");
+    });
+
+RELAY_REGISTER_OP("nn.max_pool2d_with_argmax")
     .describe(R"code(Max pooling operation for two dimensional data.
 
 - **data**: This depends on the `layout` parameter. Input is 4D array of shape

@@ -29,7 +29,6 @@ from .packed_func import PackedFunc, PackedFuncHandle, _set_class_module
 
 from . import _ffi_api
 
-
 # profile result of time evaluator
 ProfileResult = namedtuple("ProfileResult", ["mean", "results"])
 
@@ -349,6 +348,93 @@ class Module(object):
             kwargs.update({"options": opts})
 
         fcompile(file_name, files, **kwargs)
+
+    def export_hhb_library(self, file_name, fcompile=None, output_dir=".", **kwargs):
+        """Export the module and its imported device code one library.
+
+        This function only works on host llvm modules.
+        It will pack all the imported modules
+
+        Parameters
+        ----------
+        file_name : str
+            The name of the shared library.
+
+        fcompile : function(target, file_list, kwargs), optional
+            Compilation function to use create dynamic library.
+            If fcompile has attribute object_format, will compile host library
+            to that format. Otherwise, will use default format "o".
+
+        kwargs : dict, optional
+            Additional arguments passed to fcompile
+        """
+        # NOTE: this function depends on contrib library features
+        # which are only available in when TVM function is available.
+        if _RUNTIME_ONLY:
+            raise RuntimeError("Cannot call export_library in runtime only mode")
+        # Extra dependencies during runtime.
+        from pathlib import Path
+        from tvm.contrib import cc as _cc, tar as _tar, util as _util
+
+        if isinstance(file_name, Path):
+            file_name = str(file_name)
+
+        modules = self._collect_dso_modules()
+        temp = _util.tempdir()
+        files = []
+        is_system_lib = False
+        has_c_module = False
+        llvm_target_triple = None
+        for index, module in enumerate(modules):
+            if fcompile is not None and hasattr(fcompile, "object_format"):
+                object_format = fcompile.object_format
+            else:
+                if module.type_key == "llvm":
+                    object_format = "o"
+                else:
+                    assert module.type_key == "c"
+                    object_format = "c"
+                    has_c_module = True
+            path_obj = "lib" + str(index) + "." + object_format
+            path_obj = os.path.join(output_dir, path_obj)
+            module.save(path_obj)
+            files.append(path_obj)
+            is_system_lib = (
+                module.type_key == "llvm" and module.get_function("__tvm_is_system_module")()
+            )
+            llvm_target_triple = (
+                module.type_key == "llvm" and module.get_function("_get_target_triple")()
+            )
+        if not fcompile:
+            if file_name.endswith(".tar"):
+                fcompile = _tar.tar
+            else:
+                fcompile = _cc.create_shared
+
+        if llvm_target_triple is None and hasattr(fcompile, "get_target_triple"):
+            llvm_target_triple = fcompile.get_target_triple()
+
+        if self.imported_modules:
+            if enabled("llvm") and llvm_target_triple:
+                path_obj = temp.relpath("devc.o")
+                m = _ffi_api.ModulePackImportsToLLVM(self, is_system_lib, llvm_target_triple)
+                m.save(path_obj)
+                files.append(path_obj)
+            else:
+                path_cc = temp.relpath("devc.cc")
+                with open(path_cc, "w") as f:
+                    f.write(_ffi_api.ModulePackImportsToC(self, is_system_lib))
+                files.append(path_cc)
+
+        if has_c_module:
+            options = []
+            if "options" in kwargs:
+                opts = kwargs["options"]
+                options = opts if isinstance(opts, (list, tuple)) else [opts]
+            opts = options + ["-I" + path for path in find_include_path()]
+            kwargs.update({"options": opts})
+
+        fcompile(file_name, files, cc="gcc", **kwargs)
 
 
 def system_lib():

@@ -77,6 +77,7 @@ class BuildModule(object):
         self._get_graph_json = self.mod["get_graph_json"]
         self._get_module = self.mod["get_module"]
         self._build = self.mod["build"]
+        self._build_hhb = self.mod["build_hhb"]
         self._optimize = self.mod["optimize"]
         self._set_params_func = self.mod["set_params"]
         self._get_params_func = self.mod["get_params"]
@@ -130,6 +131,57 @@ class BuildModule(object):
         params = self.get_params()
 
         return graph_json, mod, params
+
+    def build_hhb(
+        self, mod, target=None, target_host=None, params=None, params_path="./model.params"
+    ):
+        """
+        Parameters
+        ----------
+        mod : :py:class:`~tvm.IRModule`
+            The IRModule to build.
+
+        target : str, :any:`tvm.target.Target`, or dict of str(i.e.
+        device/context name) to str/tvm.target.Target, optional
+            For heterogeneous compilation, it is a dictionary indicating context
+            to target mapping. For homogeneous compilation, it is a build target.
+
+        target_host : str or :any:`tvm.target.Target`, optional
+            Host compilation target, if target is device.
+            When TVM compiles device specific program such as CUDA,
+            we also need host(CPU) side code to interact with the driver
+            to setup the dimensions and parameters correctly.
+            target_host is used to specify the host side codegen target.
+            By default, llvm is used if it is enabled,
+            otherwise a stackvm intepreter is used.
+
+        params : dict of str to NDArray
+            Input parameters to the graph that do not change
+            during inference time. Used for constant folding.
+
+        Returns
+        -------
+        graph_json : str
+            The json string that can be accepted by graph runtime.
+
+        mod : tvm.Module
+            The module containing necessary libraries.
+
+        params : dict
+            The parameters of the final graph.
+        """
+        target = _update_target(target)
+
+        # Setup the params.
+        if params:
+            self._set_params(params)
+        # Build the IR module
+        self._build_hhb(mod, target, target_host, params_path)
+        # Get artifacts
+        mod = self.get_module()
+        params = self.get_params()
+
+        return mod, params
 
     def optimize(self, mod, target=None, params=None):
         """
@@ -249,16 +301,78 @@ def build(mod, target=None, target_host=None, params=None, mod_name="default"):
 
     # If current dispatch context is fallback context (the default root context),
     # then load pre-tuned parameters from TopHub
-    if isinstance(autotvm.DispatchContext.current, autotvm.FallbackContext):
-        tophub_context = autotvm.tophub.context(list(target.values()))
-    else:
-        tophub_context = autotvm.util.EmptyContext()
+    #    if isinstance(autotvm.DispatchContext.current, autotvm.FallbackContext):
+    #        tophub_context = autotvm.tophub.context(list(target.values()))
+    #    else:
+    tophub_context = autotvm.util.EmptyContext()
 
     with tophub_context:
         bld_mod = BuildModule()
         graph_json, mod, params = bld_mod.build(mod, target, target_host, params)
         mod = _graph_runtime_factory.GraphRuntimeFactoryModule(graph_json, mod, mod_name, params)
         return mod
+
+
+def build_hhb(mod, target=None, target_host=None, params=None, params_path="./model.params"):
+    """Helper function that builds a Relay function to HHB runtime.
+
+    Parameters
+    ----------
+    mod : :py:class:`~tvm.IRModule`
+        The IR module to build. Using relay.Function is deprecated.
+
+    target : str, :any:`tvm.target.Target`, or dict of str(i.e. device/context
+    name) to str/tvm.target.Target, optional
+        For heterogeneous compilation, it is a dictionary indicating context to
+        target mapping. For homogeneous compilation, it is a build target.
+
+    target_host : str or :any:`tvm.target.Target`, optional
+        Host compilation target, if target is device.
+        When TVM compiles device specific program such as CUDA,
+        we also need host(CPU) side code to interact with the driver
+        setup the dimensions and parameters correctly.
+        target_host is used to specify the host side codegen target.
+        By default, llvm is used if it is enabled,
+        otherwise a stackvm intepreter is used.
+
+    params : dict of str to NDArray
+        Input parameters to the graph that do not change
+        during inference time. Used for constant folding.
+
+    Returns
+    -------
+    graph_json : str
+        The json string that can be accepted by graph runtime.
+
+    mod : tvm.Module
+        The module containing necessary libraries.
+
+    params : dict
+        The parameters of the final graph.
+    """
+    if not isinstance(mod, (IRModule, _function.Function)):
+        raise ValueError("Type of input parameter mod must be tvm.IRModule")
+
+    if isinstance(mod, _function.Function):
+        if params:
+            mod = bind_params_by_name(mod, params)
+        mod = IRModule.from_expr(mod)
+        warnings.warn(
+            "Please use input parameter mod (tvm.IRModule) "
+            "instead of deprecated parameter mod (tvm.relay.function.Function)",
+            DeprecationWarning,
+        )
+
+    target = _update_target(target)
+
+    if isinstance(target_host, (str, Target)):
+        target_host = Target(target_host)
+    elif target_host:
+        raise ValueError("target host must be the type of str, " + "tvm.target.Target, or None")
+
+    bld_mod = BuildModule()
+    mod, params = bld_mod.build_hhb(mod, target, target_host, params, params_path)
+    return mod, params
 
 
 def optimize(mod, target=None, params=None):
@@ -303,10 +417,10 @@ def optimize(mod, target=None, params=None):
 
     # If current dispatch context is fallback context (the default root context),
     # then load pre-tuned parameters from TopHub
-    if isinstance(autotvm.DispatchContext.current, autotvm.FallbackContext):
-        tophub_context = autotvm.tophub.context(list(target.values()))
-    else:
-        tophub_context = autotvm.util.EmptyContext()
+    #    if isinstance(autotvm.DispatchContext.current, autotvm.FallbackContext):
+    #        tophub_context = autotvm.tophub.context(list(target.values()))
+    #    else:
+    tophub_context = autotvm.util.EmptyContext()
 
     with tophub_context:
         bld_mod = BuildModule()
