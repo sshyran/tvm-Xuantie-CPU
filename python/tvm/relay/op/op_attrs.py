@@ -354,6 +354,21 @@ class ProposalAttrs(Attrs):
     """Attributes used in proposal operators"""
 
 
+@tvm._ffi.register_object("relay.attrs.PSRoIPoolingAttrs")
+class PSRoIPoolingAttrs(Attrs):
+    """Attributes used in psroipooling operators"""
+
+
+@tvm._ffi.register_object("relay.attrs.MaxPool2dLocationAttrs")
+class MaxPool2dLocationAttrs(Attrs):
+    """Attributes used in MaxPool2dLocation operators"""
+
+
+@tvm._ffi.register_object("relay.attrs.UnpoolingAttrs")
+class UnpoolingAttrs(Attrs):
+    """Attributes used in Unpooling operators"""
+
+
 @tvm._ffi.register_object("relay.attrs.MaxPool2DAttrs")
 class MaxPool2DAttrs(Attrs):
     """Attributes used in max_pool2d operators"""
@@ -577,6 +592,16 @@ class TupleGetItemAttrs(Attrs):
 @tvm._ffi.register_object("relay.attrs.WithFuncIdAttrs")
 class WithFuncIdAttrs(Attrs):
     """Attributes used in with_funcid annotation operators"""
+
+
+@tvm._ffi.register_object("relay.attrs.SegmentAttrs")
+class SegmentAttrs(Attrs):
+    """Attributes used in segment operators"""
+
+
+@tvm._ffi.register_object("relay.attrs.FsmnAttrs")
+class FsmnAttrs(Attrs):
+    """Attributes used in fsmn operators"""
 
 
 @tvm._ffi.register_object("relay.attrs.SpaceToBatchNDAttrs")

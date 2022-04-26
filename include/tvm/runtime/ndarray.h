@@ -145,6 +145,8 @@ class NDArray : public ObjectRef {
    * \return A DLManagedTensor
    */
   TVM_DLL DLManagedTensor* ToDLPack() const;
+
+  TVM_DLL NDArray Duplicate();
   /*!
    * \brief Create an empty NDArray.
    * \param shape The shape of the new array.
@@ -177,6 +179,7 @@ class NDArray : public ObjectRef {
                                  TVMStreamHandle stream = nullptr);
 
   TVM_DLL ShapeTuple Shape() const;
+  TVM_DLL int64_t Length() const;
   TVM_DLL runtime::DataType DataType() const;
   // internal namespace
   struct Internal;

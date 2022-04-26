@@ -218,6 +218,10 @@ reg.register_pattern("nn.conv1d", OpPattern.OUT_ELEMWISE_FUSABLE)
 reg.register_strategy("nn.conv2d", strategy.conv2d_strategy)
 reg.register_pattern("nn.conv2d", OpPattern.OUT_ELEMWISE_FUSABLE)
 
+# fsmn
+reg.register_strategy("nn.fsmn", strategy.fsmn_strategy)
+reg.register_pattern("nn.fsmn", OpPattern.OPAQUE)
+
 
 @reg.register_alter_op_layout("nn.conv2d")
 def alter_op_layout_conv2d(attrs, inputs, tinfos, out_type):
@@ -504,6 +508,10 @@ reg.register_pattern("nn.max_pool1d", OpPattern.OUT_ELEMWISE_FUSABLE)
 # max_pool2d
 reg.register_schedule("nn.max_pool2d", strategy.schedule_pool)
 reg.register_pattern("nn.max_pool2d", OpPattern.OUT_ELEMWISE_FUSABLE)
+
+# max_pool2d_with_argmax
+reg.register_schedule("nn.max_pool2d_with_argmax", strategy.schedule_pool)
+reg.register_pattern("nn.max_pool2d_with_argmax", OpPattern.OUT_ELEMWISE_FUSABLE)
 
 
 @reg.register_convert_op_layout("nn.max_pool2d")

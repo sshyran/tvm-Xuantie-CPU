@@ -1,0 +1,4 @@
+#!/bin/bash
+
+LD_LIBRARY_PATH=../../../../csi-nn2/lib/:../../../../csi-nn2/module/nna_ddk_install/x86/
+./a.tp model.params

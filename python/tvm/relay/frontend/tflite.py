@@ -32,6 +32,7 @@ from .. import op as _op
 from .. import qnn as _qnn
 from .common import ExprTable
 from .common import infer_shape as _infer_shape
+from .common import set_span
 from .common import to_int_list
 from .tflite_flexbuffer import FlexBufferDecoder
 
@@ -239,12 +240,17 @@ class OperatorConverter(object):
 
             if len(output_tensors) == 1:
                 tensor_idx = output_tensors[0].tensor_idx
-                self.exp_tab.set_expr(get_tensor_name(self.subgraph, tensor_idx), ret)
+                curr_output = get_tensor_name(self.subgraph, tensor_idx)
+                ret = set_span(ret, "location: {}, output_name: {}".format(op_idx, curr_output))
+                self.exp_tab.set_expr(curr_output, ret)
             else:
-                for idx, output_tensor in enumerate(output_tensors):
-                    self.exp_tab.set_expr(
-                        get_tensor_name(self.subgraph, output_tensor.tensor_idx), ret[idx]
-                    )
+                out_names = []
+                for output_tensor in output_tensors:
+                    out_names.append(get_tensor_name(self.subgraph, output_tensor.tensor_idx))
+                curr_output = ", ".join(out_names)
+                ret = set_span(ret, "location: {}, output_name: {}".format(op_idx, curr_output))
+                for idx, out_name in enumerate(out_names):
+                    self.exp_tab.set_expr(out_name, ret[idx])
 
     def get_op_code_str(self, op):
         """Get TFLite ops string representation"""
@@ -1046,6 +1052,14 @@ class OperatorConverter(object):
         assert len(input_tensors) == 1, "input tensors length should be 1"
         input_tensor = input_tensors[0]
         in_expr = self.get_expr(input_tensor.tensor_idx)
+        inshape = _infer_shape(in_expr)
+        if len(inshape) != 2:
+            import warnings
+
+            warnings.warn(
+                "Log softmax requires 2-D input. Forced to add a reshape layer to log softmax."
+            )
+            in_expr = _op.reshape(in_expr, [1, -1])
 
         output_tensors = self.get_output_tensors(op)
         assert len(output_tensors) == 1, "output tensors length should be 1"
@@ -1069,7 +1083,17 @@ class OperatorConverter(object):
 
         input_tensors = self.get_input_tensors(op)
         assert len(input_tensors) >= 1, "input tensors should greater than 1"
-        in_exprs = [self.get_tensor_expr(_) for _ in input_tensors]
+
+        in_exprs = []
+        for input_tensor in input_tensors:
+            try:
+                in_exprs.append(self.get_expr(input_tensor.tensor_idx))
+            except KeyError:
+                tensor_value = self.get_tensor_value(input_tensor)
+                tensor_type = input_tensor.tensor.Type()
+                tensor_type_str = self.get_tensor_type_str(tensor_type)
+                tensor_expr = self.exp_tab.new_const(tensor_value, dtype=tensor_type_str)
+                in_exprs.append(tensor_expr)
 
         output_tensors = self.get_output_tensors(op)
         assert len(output_tensors) == 1, "output tensors length should be 1"
@@ -2735,7 +2759,6 @@ class OperatorConverter(object):
         crops = self.get_tensor_value(input_tensors[2]).tolist()
 
         out = _op.nn.batch_to_space_nd(in_expr, block_shape, crops)
-
         return out
 
     def convert_space_to_batch_nd(self, op):

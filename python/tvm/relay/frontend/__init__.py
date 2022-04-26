@@ -25,6 +25,7 @@ from .mxnet_qnn_op_utils import quantize_conv_bias_mkldnn_from_var
 from .keras import from_keras
 from .onnx import from_onnx
 from .tflite import from_tflite
+from .tflite_hhb import from_tflite_to_hhb
 from .coreml import from_coreml
 from .caffe2 import from_caffe2
 from .tensorflow import from_tensorflow
@@ -33,3 +34,5 @@ from .pytorch import from_pytorch
 from .caffe import from_caffe
 from .paddlepaddle import from_paddle
 from .change_datatype import ChangeDatatype
+from .kaldi_parse import KaldiLoader
+from .kaldi import from_kaldi

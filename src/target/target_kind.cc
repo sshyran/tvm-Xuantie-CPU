@@ -219,6 +219,10 @@ Map<String, ObjectRef> UpdateROCmAttrs(Map<String, ObjectRef> attrs) {
 
 /**********  Register Target kinds and attributes  **********/
 
+TVM_REGISTER_TARGET_KIND("aitrace", kDLExtDev)
+    .add_attr_option<Array<String>>("type")
+    .add_attr_option<String>("path");
+
 TVM_REGISTER_TARGET_KIND("llvm", kDLCPU)
     .add_attr_option<Array<String>>("mattr")
     .add_attr_option<String>("mcpu")

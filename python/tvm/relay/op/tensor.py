@@ -1308,3 +1308,184 @@ def isinf(data):
         The computed result.
     """
     return _make.isinf(data)
+
+
+def segment_max(data, segment_ids, num_segments):
+    """Computes the maximum along segments of a tensor.
+    Parameters
+    ----------
+    data : relay.Expr
+        The input data
+    segment_ids : relay.Expr
+        The segments data
+    num_segments : int
+        The maximum of segment_ids.
+    Returns
+    -------
+    result : relay.Expr
+        The computed result.
+    """
+    return _make.segment_max(data, segment_ids, num_segments)
+
+
+def segment_min(data, segment_ids, num_segments):
+    """Computes the minimum along segments of a tensor.
+    Parameters
+    ----------
+    data : relay.Expr
+        The input data
+    segment_ids : relay.Expr
+        The segments data
+    num_segments : int
+        The maximum of segment_ids.
+    Returns
+    -------
+    result : relay.Expr
+        The computed result.
+    """
+    return _make.segment_min(data, segment_ids, num_segments)
+
+
+def segment_mean(data, segment_ids, num_segments):
+    """Computes the mean along segments of a tensor.
+    Parameters
+    ----------
+    data : relay.Expr
+        The input data
+    segment_ids : relay.Expr
+        The segments data
+    num_segments : int
+        The maximum of segment_ids.
+    Returns
+    -------
+    result : relay.Expr
+        The computed result.
+    """
+    return _make.segment_mean(data, segment_ids, num_segments)
+
+
+def segment_sum(data, segment_ids, num_segments):
+    """Computes the sum along segments of a tensor.
+    Parameters
+    ----------
+    data : relay.Expr
+        The input data
+    segment_ids : relay.Expr
+        The segments data
+    num_segments : int
+        The maximum of segment_ids.
+    Returns
+    -------
+    result : relay.Expr
+        The computed result.
+    """
+    return _make.segment_sum(data, segment_ids, num_segments)
+
+
+def segment_prod(data, segment_ids, num_segments):
+    """Computes the prod along segments of a tensor.
+    Parameters
+    ----------
+    data : relay.Expr
+        The input data
+    segment_ids : relay.Expr
+        The segments data
+    num_segments : int
+        The maximum of segment_ids.
+    Returns
+    -------
+    result : relay.Expr
+        The computed result.
+    """
+    return _make.segment_prod(data, segment_ids, num_segments)
+
+
+def cumsum(data, axis=0, exclusive=False):
+    """Compute the cumulative sum of data along axis.
+
+    Parameters
+    ----------
+    data : relay.Expr
+        The input data
+
+    axis : int
+        Must be in the range [-rank(data), rank(data))
+
+    exclusive : bool
+        If True, perform exclusive cumsum.
+
+    reverse : bool
+        If True, the calculate is performed in the opposite direction.
+
+
+    Returns
+    -------
+    result : relay.Expr
+        The computed result.
+    """
+    return _make.cumsum(data, axis, exclusive)
+
+
+def cumprod(data, axis=0, exclusive=False):
+    """Compute the cumulative prod of data along axis.
+
+    Parameters
+    ----------
+    data : relay.Expr
+        The input data
+
+    axis : int
+        Must be in the range [-rank(data), rank(data))
+
+    exclusive : bool
+        If True, perform exclusive cumprod.
+
+    reverse : bool
+        If True, the calculate is performed in the opposite direction.
+
+
+    Returns
+    -------
+    result : relay.Expr
+        The computed result.
+    """
+    return _make.cumprod(data, axis, exclusive)
+
+
+def hardmax(data, axis=0):
+    """The operator computes the hardmax values for the given input.
+
+    Parameters
+    ----------
+    data : relay.Expr
+        The input data
+
+    axis : int
+        Must be in the range [-rank(data), rank(data))
+
+    Returns
+    -------
+    result : relay.Expr
+        The computed result.
+    """
+    return _make.hardmax(data, axis)
+
+
+def celu(data, alpha=1.0):
+    """The operator computes the hardmax values for the given input.
+
+    Parameters
+    ----------
+    data : relay.Expr
+        The input data
+
+    alpha : double
+        The Alpha value in Celu formula which control the shape of
+        the unit. The default value is 1.0.
+
+    Returns
+    -------
+    result : relay.Expr
+        The computed result.
+    """
+    return _make.celu(data, alpha)

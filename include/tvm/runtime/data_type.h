@@ -139,6 +139,33 @@ class DataType {
    * \return The comparison result.
    */
   bool operator!=(const DataType& other) const { return !operator==(other); }
+
+  bool operator>(const DataType& other) const {
+    if (data_.code == other.data_.code) {
+      return data_.bits > other.data_.bits;
+    } else {
+      int l_kind;
+      int r_kind;
+      if (data_.code == 0) {
+        l_kind = 1;
+      } else if (data_.code == 1) {
+        l_kind = 0;
+      } else {
+        l_kind = 2;
+      }
+
+      if (other.data_.code == 0) {
+        r_kind = 1;
+      } else if (other.data_.code == 1) {
+        r_kind = 0;
+      } else {
+        r_kind = 2;
+      }
+
+      return l_kind > r_kind;
+    }
+  }
+
   /*!
    * \brief Converter to DLDataType
    * \return the result.

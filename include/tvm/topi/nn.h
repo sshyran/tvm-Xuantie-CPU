@@ -690,6 +690,7 @@ inline Tensor nll_loss(const Tensor& predictions, const Tensor& targets, const T
     return T;
   }
 }
+
 }  // namespace topi
 }  // namespace tvm
 #endif  // TVM_TOPI_NN_H_

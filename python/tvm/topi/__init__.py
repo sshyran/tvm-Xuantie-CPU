@@ -61,6 +61,8 @@ from . import vision
 from . import image
 from . import sparse
 from . import hls
+from . import csinn
+from . import vivante
 from . import random
 from . import hexagon
 

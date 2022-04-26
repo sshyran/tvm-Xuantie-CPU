@@ -15,6 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # pylint: disable=no-else-return, unidiomatic-typecheck, undefined-variable, invalid-name, redefined-builtin
+# pylint: disable=unused-argument
 """
 The Relay Virtual Machine.
 
@@ -258,10 +259,12 @@ class VMCompiler(object):
         """Get the autotvm context."""
         # If current dispatch context is fallback context (the default root context),
         # then load pre-tuned parameters from TopHub
-        if isinstance(autotvm.DispatchContext.current, autotvm.FallbackContext):
-            tophub_context = autotvm.tophub.context(list(target.values()))
-        else:
-            tophub_context = autotvm.utils.EmptyContext()
+
+        # if isinstance(autotvm.DispatchContext.current, autotvm.FallbackContext):
+        #     tophub_context = autotvm.tophub.context(list(target.values()))
+        # else:
+        tophub_context = autotvm.utils.EmptyContext()
+
         return tophub_context
 
 

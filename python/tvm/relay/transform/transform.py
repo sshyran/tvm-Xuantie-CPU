@@ -15,6 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # pylint: disable=invalid-name, unused-argument, missing-docstring, unused-import
+# pylint: disable=import-outside-toplevel
 """
 Relay pass transformation infrastructure.
 """
@@ -23,9 +24,14 @@ import inspect
 import types
 import warnings
 
+import numpy as np
+
 import tvm.ir
 from tvm import relay, te
 from tvm.runtime import ndarray as _nd
+from tvm.tir.expr import ExprOp
+
+# from tvm.relay.dataflow_pattern import DFPatternCallback, wildcard, is_op, rewrite
 
 from . import _ffi_api
 from ..backend.utils import mangle_module_name
@@ -1144,6 +1150,135 @@ def SimplifyExpr():
         The registered SimplifyExpr pass.
     """
     return _ffi_api.SimplifyExpr()
+
+
+@function_pass(opt_level=1)
+class SpaceToBatch2AtrousConv:
+    """ Convert space_to_batch + conv + batch_to_space into dilation/atrous conv"""
+
+    def transform_function(self, func, mod, ctx):
+        from tvm.relay.dataflow_pattern import DFPatternCallback, wildcard, is_op, rewrite
+
+        def conv2python(data):
+            res = list()
+            for d in data:
+                if isinstance(d, tvm.ir.container.Array):
+                    d_res = list()
+                    for dd in d:
+                        d_res.append(int(dd))
+                    res.append(d_res)
+                elif isinstance(d, tvm.tir.expr.IntImm):
+                    res.append(int(d))
+            return res
+
+        class MyCallback(DFPatternCallback):
+            def __init__(self):
+                super(MyCallback, self).__init__()
+                self.inp = wildcard()
+                self.w = wildcard()
+                self.b = wildcard()
+                self.is_transpose1 = is_op("transpose")(self.inp)
+                self.is_space_to_batch_nd = is_op("nn.space_to_batch_nd")(self.is_transpose1)
+                self.is_transpose2 = is_op("transpose")(self.is_space_to_batch_nd)
+                self.is_conv2d = is_op("nn.conv2d")(self.is_transpose2, self.w)
+                self.is_bias_add = is_op("nn.bias_add")(self.is_conv2d, self.b)
+                self.is_transpose3 = is_op("transpose")(self.is_bias_add)
+                self.is_batch_to_space_nd = is_op("nn.batch_to_space_nd")(self.is_transpose3)
+                self.is_transpose4 = is_op("transpose")(self.is_batch_to_space_nd)
+
+                self.pattern = self.is_transpose4
+
+            def callback(self, pre, post, node_map):
+                paddings = conv2python(node_map[self.is_space_to_batch_nd][0].attrs.paddings)
+                block_shape = conv2python(node_map[self.is_space_to_batch_nd][0].attrs.block_shape)
+                crops = conv2python(node_map[self.is_batch_to_space_nd][0].attrs.crops)
+
+                groups = int(node_map[self.is_conv2d][0].attrs.groups)
+                channels = int(node_map[self.is_conv2d][0].attrs.channels)
+                kernel_size = conv2python(node_map[self.is_conv2d][0].attrs.kernel_size)
+
+                new_paddings = np.subtract(paddings, crops)
+                new_paddings = new_paddings.transpose().flatten().tolist()
+
+                new_node = relay.op.nn.conv2d(
+                    node_map[self.inp][0],
+                    node_map[self.w][0],
+                    padding=new_paddings,
+                    dilation=block_shape,
+                    groups=groups,
+                    channels=channels,
+                    kernel_size=kernel_size,
+                )
+
+                new_node = relay.op.nn.bias_add(new_node, node_map[self.b][0])
+                return new_node
+
+        out = rewrite(MyCallback(), mod["main"].body)
+        res = tvm.IRModule.from_expr(out)
+
+        return res["main"]
+
+
+@function_pass(opt_level=3)
+class AddPreprocessNode:
+    """Insert the preprocess node(mul/add) into original module."""
+
+    def __init__(self, mean_value=None, scale_value=None, layout="NCHW"):
+        self.mean_value = mean_value
+        self.scale_value = scale_value
+        self.layout = layout
+
+        def _convert_data(data, layout):
+            if not data:
+                return data
+            new_data = np.array(data, np.float32)
+            if new_data.ndim == 1:
+                if layout == "NCHW":
+                    new_data = np.expand_dims(new_data, (1, 2))
+                elif layout == "NHWC":
+                    new_data = np.expand_dims(new_data, (0, 1))
+                else:
+                    raise ValueError("Unsupport for layout: %s in AddPreprocessNode." % layout)
+            return new_data
+
+        self.mean_value = _convert_data(self.mean_value, self.layout)
+        self.scale_value = _convert_data(self.scale_value, self.layout)
+
+    def transform_function(self, func, mod, ctx):
+        func = relay.Function(func.params, func.body, None, func.type_params, func.attrs)
+        preprocess_params = self
+
+        class InnerMutator(tvm.relay.ExprMutator):
+            def visit_call(self, call):
+                op_args = [self.visit(arg) for arg in call.args]
+
+                pre_call = op_args[0]
+                if isinstance(pre_call, relay.expr.Var):
+                    out = pre_call
+                    if (
+                        preprocess_params.mean_value is not None
+                        and preprocess_params.scale_value is not None
+                    ):
+                        new_scale = preprocess_params.scale_value
+                        new_mean = preprocess_params.scale_value * preprocess_params.mean_value
+
+                        out = relay.op.multiply(out, relay.expr.const(new_scale, "float32"))
+                        # pylint: disable=invalid-unary-operand-type
+                        out = relay.op.add(out, relay.expr.const(-new_mean, "float32"))
+                    elif preprocess_params.mean_value is not None:
+                        # pylint: disable=invalid-unary-operand-type
+                        out = relay.op.add(
+                            out, relay.expr.const(-preprocess_params.mean_value, "float32")
+                        )
+                    elif preprocess_params.scale_value is not None:
+                        out = relay.op.multiply(
+                            out, relay.expr.const(preprocess_params.scale_value, "float32")
+                        )
+
+                    op_args[0] = out
+                return relay.expr.Call(call.op, op_args, call.attrs)
+
+        return InnerMutator().visit(func)
 
 
 def PlanDevices(default_device):

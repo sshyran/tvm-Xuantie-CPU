@@ -47,6 +47,7 @@ def _find_scale_by_kl(arr, quantized_dtype="int8", num_bins=8001, num_quantized_
     hist_ptr = get_pointer(hist.astype(np.int32), ctypes.c_int)
     hist_edges_ptr = get_pointer(hist_edges, ctypes.c_float)
 
-    return _quantize.FindScaleByKLMinimization(
+    max_th = _quantize.FindScaleByKLMinimization(
         hist_ptr, hist_edges_ptr, num_bins, num_quantized_bins
     )
+    return -max_th, max_th

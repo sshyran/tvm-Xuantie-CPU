@@ -23,3 +23,10 @@ from . import ssd
 from .reorg import *
 from .nms import *
 from .rcnn import *
+from .psroipooling import *
+from .max_pool2d_location import *
+from .unpooling import *
+from .extract_image_patches import *
+from .invert_permutation import *
+from .categorical import *
+from .random import *

@@ -28,6 +28,9 @@ add_definitions(-DDMLC_USE_FOPEN64=0 -DNDEBUG=1)
 # Test if ${USE_LLVM} is not an explicit boolean false
 # It may be a boolean or a string
 if(NOT ${USE_LLVM} MATCHES ${IS_FALSE_PATTERN})
+  if(USE_LLVM STREQUAL "ON")
+    set(USE_LLVM "${tvm_SOURCE_DIR}/llvm_install/bin/llvm-config")
+  endif()
   find_llvm(${USE_LLVM})
   include_directories(SYSTEM ${LLVM_INCLUDE_DIRS})
   add_definitions(${LLVM_DEFINITIONS})

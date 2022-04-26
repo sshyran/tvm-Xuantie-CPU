@@ -15,7 +15,8 @@
 # specific language governing permissions and limitations
 # under the License.
 # pylint: disable=import-self, invalid-name, unused-argument, too-many-lines, len-as-condition, broad-except
-# pylint: disable=import-outside-toplevel, redefined-builtin
+# pylint: disable=import-outside-toplevel, redefined-builtin, unused-variable, not-callable, no-else-raise
+# pylint: disable=no-else-return
 """TF: Tensorflow frontend."""
 import warnings
 from collections import defaultdict
@@ -31,12 +32,14 @@ from tvm.relay.transform import InferType
 from .. import analysis
 from .. import expr as _expr
 from .. import function as _function
+from .. import op as _op
 from ..ty import Any
 from ..expr_functor import ExprMutator, ExprVisitor
 from .common import get_relay_op
 from .common import infer_type as _infer_type
 from .common import infer_shape as _infer_shape
 from .common import infer_value as _infer_value
+from .common import set_span
 
 from .tensorflow_ops import _convert_map
 from .tensorflow_ops import _need_prelude_for_shape_inference
@@ -410,7 +413,7 @@ class GraphProto(object):
         self._loops = {}
         self._branches = {}
         self._mod = IRModule({})
-        self._prelude = Prelude(self._mod)
+        self._prelude = None
         self._control_flow_node_map = defaultdict(set)
         self._loop_body_order = {}
         self._loop_var_order = {}
@@ -422,7 +425,15 @@ class GraphProto(object):
         self._tensor_array_shapes = {}
         self._tensor_array_shape_nodes = {}
 
-    def _get_relay_func(self, graph, layout="NHWC", shape=None, outputs=None):
+    def _get_relay_func(
+        self,
+        graph,
+        layout="NHWC",
+        shape=None,
+        outputs=None,
+        input_layout="NHWC",
+        data_layout="NHWC",
+    ):
         """Construct relay nodes from tensorflow graph definition - GraphDef.
 
         Follow the tensorflow graph definition to parse and convert it to Relay.
@@ -472,6 +483,8 @@ class GraphProto(object):
         ta_construct_nodes = []
         self._in_shape = shape
         self._layout = layout
+        self._input_layout = input_layout
+        self._data_layout = data_layout
         self._graph = graph
 
         if missing_operators:
@@ -521,6 +534,8 @@ class GraphProto(object):
                         node.name, shape=self._input_shapes[node.name], dtype=attr["dtype"].name
                     )
                 ]
+                if self._input_layout == "NHWC" and self._layout == "NCHW":
+                    self._nodes[node.name] = _op.transpose(self._nodes[node.name], [0, 3, 1, 2])
 
                 # Ignore user's input shape for Non placeholder
             elif node.op == "Const":
@@ -652,11 +667,26 @@ class GraphProto(object):
         self._params = final_params
         return func
 
-    def from_tensorflow(self, graph, layout="NHWC", shape=None, outputs=None):
+    def from_tensorflow(
+        self,
+        graph,
+        layout="NHWC",
+        shape=None,
+        outputs=None,
+        input_layout="NHWC",
+        data_layout="NHWC",
+    ):
         """Wrapper to _get_relay_func which converts Tensorflow graph to Relay function
         which is used as main function for the Relay module
         """
-        func = self._get_relay_func(graph, layout=layout, shape=shape, outputs=outputs)
+        func = self._get_relay_func(
+            graph,
+            layout=layout,
+            shape=shape,
+            outputs=outputs,
+            input_layout=input_layout,
+            data_layout=data_layout,
+        )
         self._mod["main"] = func
         return self._mod, self._params
 
@@ -1020,6 +1050,8 @@ class GraphProto(object):
             sym = get_relay_op(op_name)(*inputs, **attrs)
         elif op_name in convert_map:
             if _need_prelude_for_shape_inference(op_name):
+                if self._prelude is None:
+                    self._prelude = Prelude(self._mod)
                 sym = convert_map[op_name](inputs, attrs, self._params, self._prelude)
             else:
                 sym = convert_map[op_name](inputs, attrs, self._params, self._mod)
@@ -1028,22 +1060,8 @@ class GraphProto(object):
         else:
             raise NotImplementedError("Operator {} not implemented.".format(op_name))
 
-        sym = self._set_span(sym, node_name)
+        sym = set_span(sym, node_name)
 
-        return sym
-
-    @staticmethod
-    def _set_span(sym, node_name):
-        span = tvm.relay.Span(tvm.relay.SourceName(node_name), 0, 0, 0, 0)
-        if isinstance(sym, _expr.Call) and sym.span is None:
-            sym = _expr.Call(sym.op, sym.args, sym.attrs, sym.type_args, span)
-        elif isinstance(sym, _expr.TupleWrapper):
-            tuple_value = sym.tuple_value
-            if isinstance(tuple_value, _expr.Call) and tuple_value.span is None:
-                tuple_value = _expr.Call(
-                    tuple_value.op, tuple_value.args, tuple_value.attrs, tuple_value.type_args, span
-                )
-                sym = _expr.TupleWrapper(tuple_value, sym.size)
         return sym
 
     def _licm_construct(self, loop_name, node_name):
@@ -1211,15 +1229,97 @@ class SubGraphProto(GraphProto):
         super().__init__()
         self._main_graph_proto = main_graph_proto  # holds main graph proto object
 
-    def from_tensorflow(self, graph, layout="NHWC", shape=None, outputs=None):
+    def from_tensorflow(
+        self,
+        graph,
+        layout="NHWC",
+        shape=None,
+        outputs=None,
+        input_layout="NHWC",
+        data_layout="NHWC",
+    ):
         """Wrapper to _get_relay_func which converts Tensorflow graph to Relay function.
         Return Relay function and params
         """
-        func = self._get_relay_func(graph, layout=layout, shape=shape, outputs=outputs)
+        func = self._get_relay_func(
+            graph,
+            layout=layout,
+            shape=shape,
+            outputs=outputs,
+            input_layout="NHWC",
+            data_layout="NHWC",
+        )
         return func, self._params
 
 
-def from_tensorflow(graph, layout="NHWC", shape=None, outputs=None, convert_config=None):
+def fuse_op(mod):
+    """ Fusion operation """
+
+    class FusePReluMutator(ExprMutator):
+        """ Fuse prelu """
+
+        def visit_call(self, call):
+            op_args = [self.visit(arg) for arg in call.args]
+            try:
+                if call.op.name == "maximum":
+                    new_attrs = {i: getattr(call.attrs, i) for i in dir(call.attrs)}
+                    assert call.span, "Span in call is None."
+                    curr_call_name = call.span.source_name.name
+                    l_pre_call = op_args[0]
+                    r_pre_call = op_args[1]
+                    if isinstance(l_pre_call, _expr.Call) and l_pre_call.op.name == "multiply":
+                        assert l_pre_call.span, "Span in call is None."
+                        pre_call_name = l_pre_call.span.source_name.name
+                        l_pp_call = l_pre_call.args[1]
+                        alpha = float(l_pre_call.args[0].data.asnumpy())
+                        if (
+                            isinstance(r_pre_call, _expr.TupleGetItem)
+                            and isinstance(l_pp_call, _expr.TupleGetItem)
+                        ) and (r_pre_call.tuple_value == l_pp_call.tuple_value):
+
+                            new_call = _op.nn.leaky_relu(r_pre_call, alpha)
+                            new_name = (
+                                "merge_"
+                                + pre_call_name
+                                + "_and_"
+                                + curr_call_name
+                                + "_to_leaky_relu"
+                            )
+                            new_call = set_span(new_call, new_name)
+                            return new_call
+                        elif (
+                            isinstance(r_pre_call, _expr.Call) and isinstance(l_pp_call, _expr.Call)
+                        ) and (r_pre_call == l_pp_call):
+                            new_call = _op.nn.leaky_relu(r_pre_call, alpha)
+                            new_name = (
+                                "merge_"
+                                + pre_call_name
+                                + "_and_"
+                                + curr_call_name
+                                + "_to_leaky_relu"
+                            )
+                            new_call = set_span(new_call, new_name)
+                            return new_call
+            except Exception as e:
+                pass
+            new_call = _expr.Call(call.op, op_args, call.attrs, call.type_args, call.span)
+            return new_call
+
+    mod["main"] = FusePReluMutator().visit(mod["main"])
+
+    return mod
+
+
+def from_tensorflow(
+    graph,
+    layout="NHWC",
+    shape=None,
+    outputs=None,
+    convert_config=None,
+    use_dense_op=True,
+    input_layout="NHWC",
+    data_layout="NHWC",
+):
     """Load tensorflow graph which is a python tensorflow graph object into relay.
     The companion parameters will be handled automatically.
 
@@ -1256,9 +1356,18 @@ def from_tensorflow(graph, layout="NHWC", shape=None, outputs=None, convert_conf
         Dict of converted parameters stored in tvm.nd.NDArray format
     """
     global TF_DEFAULT_CONFIGS
+    TF_DEFAULT_CONFIGS["use_dense"] = use_dense_op
     if convert_config is not None:
         TF_DEFAULT_CONFIGS.update(convert_config)
 
+    assert layout in ["NCHW", "NHWC"]
+    assert input_layout in ["NCHW", "NHWC"]
+    assert data_layout in ["NCHW", "NHWC"]
+    assert not (
+        data_layout == "NCHW" and layout == "NHWC"
+    ), "Unsupported convert from NCHW to NHWC."
+
     g = GraphProto()
-    mod, params = g.from_tensorflow(graph, layout, shape, outputs)
+    mod, params = g.from_tensorflow(graph, layout, shape, outputs, input_layout, data_layout)
+    mod = fuse_op(mod)
     return mod, params

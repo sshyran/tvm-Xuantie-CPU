@@ -251,7 +251,7 @@ def c2pyerror(err_msg):
         arr.pop()
     err_type = _find_error_type(arr[0])
     trace_mode = False
-    stack_trace = []
+    stack_trace = [""]
     message = []
     for line in arr:
         if trace_mode:

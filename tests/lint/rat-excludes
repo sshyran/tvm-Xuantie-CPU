@@ -1,5 +1,6 @@
 # subdirectories
 3rdparty
+thead
 .github
 
 # Binary or data files
@@ -19,6 +20,7 @@
 .*\.log
 .*\.interp
 .*\.tokens
+.*\.tensor
 
 # microTVM test data files
 testdata
@@ -51,3 +53,8 @@ MANIFEST
 .bash_history
 rat-excludes
 Cargo.lock
+
+.*\.prototxt
+.*\.caffemodel
+
+.*\.tp

@@ -113,6 +113,7 @@ def conv1d(
     if isinstance(dilation, int):
         dilation = (dilation,)
     padding = get_pad_tuple1d(padding)
+
     return _make.conv1d(
         data,
         weight,
@@ -220,6 +221,7 @@ def conv2d(
     # TODO enforce 4-way padding in topi/nn/conv2d after #4644 merged
     # convert 2-way padding to 4-way padding
     padding = get_pad_tuple2d(padding)
+
     return _make.conv2d(
         data,
         weight,
@@ -951,6 +953,66 @@ def max_pool3d(
     padding = get_pad_tuple3d(padding)
     return _make.max_pool3d(
         data, pool_size, strides, dilation, padding, layout, out_layout, ceil_mode
+    )
+
+
+def max_pool2d_with_argmax(
+    data,
+    pool_size=(1, 1),
+    strides=(1, 1),
+    dilation=(1, 1),
+    padding=(0, 0),
+    layout="NCHW",
+    ceil_mode=False,
+):
+    r"""2D maximum pooling operator.
+
+    This operator takes data as input and does 2D max value calculation
+    with in pool_size sized window by striding defined by stride
+
+
+    In the default case, where the data_layout is `NCHW`
+    a data Tensor with shape `(batch_size, in_channels, height, width)`,
+    to produce an output Tensor with the following rule:
+
+    with data of shape (b, c, h, w) and pool_size (kh, kw)
+
+    .. math::
+
+        \mbox{out}(b, c, y, x)  = \max_{m=0, \ldots, kh-1} \max_{n=0, \ldots, kw-1}
+             \mbox{data}(b, c, \mbox{stride}[0] * y + m, \mbox{stride}[1] * x + n)
+
+    Padding is applied to data before the computation.
+    ceil_mode is used to take ceil or floor while computing out shape.
+    This operator accepts data layout specification.
+
+    Parameters
+    ----------
+    data : tvm.relay.Expr
+        The input data to the operator.
+
+    pool_size : int or tuple of int, optional
+        The size of window for pooling.
+
+    strides : tuple of int, optional
+        The strides of pooling.
+
+    padding : tuple of int, optional
+        The padding for pooling.
+
+    layout : str, optional
+        Layout of the input.
+
+    ceil_mode : bool, optional
+        To enable or disable ceil while pooling.
+
+    Returns
+    -------
+    result : tvm.relay.Expr
+        The computed result.
+    """
+    return _make.max_pool2d_with_argmax(
+        data, pool_size, strides, dilation, padding, layout, ceil_mode
     )
 
 
@@ -1850,7 +1912,7 @@ def mirror_pad(data, pad_width, mode="SYMMETRIC"):
     return _make.mirror_pad(data, pad_width, mode)
 
 
-def lrn(data, size=5, axis=1, bias=2, alpha=0.00001, beta=0.75):
+def lrn(data, size=5, axis=1, bias=2, alpha=0.00001, beta=0.75, norm_region="ACROSS_CHANNELS"):
     """This operator takes data as input and does local response normalization.
 
     Normalize the input in a local region across or within feature maps.
@@ -1881,12 +1943,15 @@ def lrn(data, size=5, axis=1, bias=2, alpha=0.00001, beta=0.75):
     beta : float, optional
         The exponent parameter.
 
+    norm_region : string, optional
+        ACROSS_CHANNELS or WITHIN_CHANNEL
+
     Returns
     -------
     result : tvm.relay.Expr
         The computed result.
     """
-    return _make.lrn(data, size, axis, alpha, beta, bias)
+    return _make.lrn(data, size, axis, alpha, beta, bias, norm_region)
 
 
 def l2_normalize(data, eps, axis=None):
@@ -3711,6 +3776,59 @@ def correlation(
     )
 
 
+def fsmn(
+    frame,
+    l_filter,
+    r_filter,
+    frame_sequence,
+    frame_counter,
+    l_order,
+    r_order,
+    l_stride,
+    r_stride,
+    unavailable_frames,
+):
+    r"""Feedforwward sequential memory network.
+
+    .. math::
+
+        c(x_{1}, x_{2}) = \sum_{o \in [-k,k] \times [-k,k]} <f_{1}(x_{1} + o), f_{2}(x_{2} + o)>
+
+    Parameters
+    ----------
+    frame : tvm.te.Tensor
+        2-D with shape [1, length]
+
+    l_filter : tvm.te.Tensor
+        2-D with shape [l_order, length]
+
+    r_filter : tvm.te.Tensor
+        2-D with shape [r_order, length]
+
+    frame_sequence: tvm.te.Tensor
+        2-D with shape [l_order + r_order, length]
+
+    frame_counter: int
+
+    Returns
+    -------
+    Output : tvm.te.Tensor
+        2-D with shape [1, length]
+    """
+    return _make.fsmn(
+        frame,
+        l_filter,
+        r_filter,
+        frame_sequence,
+        frame_counter,
+        l_order,
+        r_order,
+        l_stride,
+        r_stride,
+        unavailable_frames,
+    )
+
+
 def space_to_batch_nd(data, block_shape, paddings, pad_value=0):
     r"""Divide spatial dimensions of the data into a grid of blocks
     and interleave them into batch dim.
@@ -3770,3 +3888,19 @@ def batch_to_space_nd(data, block_shape, crops):
     """
 
     return _make.batch_to_space_nd(data, block_shape, crops)
+
+
+def swish(data):
+    r"""Computes the Swish activation function.
+
+    Parameters
+    ----------
+    data : tvm.te.Tensor
+
+    Returns
+    -------
+    result : relay.Expr
+        x * sigmoid(x)
+    """
+
+    return _make.swish(data)

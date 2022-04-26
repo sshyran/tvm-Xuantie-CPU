@@ -19,5 +19,9 @@
 from __future__ import absolute_import as _abs
 
 from .quantize import *
+from .quantize_hhb import quantize_hhb
 from ._partition import register_partition_function
 from ._annotate import register_annotate_function
+from .asy_kl_divergence import _find_scale_by_asy_kl
+from .convert_to_relay import *
+from .op_spliter import *

@@ -249,6 +249,12 @@ runtime::DataType NDArray::DataType() const {
   return runtime::DataType(get_mutable()->dl_tensor.dtype);
 }
 
+int64_t NDArray::Length() const {
+  const DLTensor* handle = &get_mutable()->dl_tensor;
+  size_t arr_size = GetDataSize(*handle);
+  return arr_size;
+}
+
 TVM_REGISTER_OBJECT_TYPE(NDArray::Container);
 
 }  // namespace runtime

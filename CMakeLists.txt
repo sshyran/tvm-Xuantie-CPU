@@ -55,6 +55,8 @@ tvm_option(BUILD_STATIC_RUNTIME "Build static version of libtvm_runtime" OFF)
 tvm_option(USE_PAPI "Use Performance Application Programming Interface (PAPI) to read performance counters" OFF)
 tvm_option(USE_GTEST "Use GoogleTest for C++ sanity tests" AUTO)
 
+tvm_option(USE_PNNA "Build with PNNA compiler" OFF)
+
 # 3rdparty libraries
 tvm_option(DLPACK_PATH "Path to DLPACK" "3rdparty/dlpack/include")
 tvm_option(DMLC_PATH "Path to DMLC" "3rdparty/dmlc-core/include")
@@ -76,6 +78,7 @@ tvm_option(USE_MIOPEN "Build with ROCM:MIOpen" OFF)
 tvm_option(USE_ROCBLAS "Build with ROCM:RoCBLAS" OFF)
 tvm_option(USE_SORT "Build with sort support" ON)
 tvm_option(USE_NNPACK "Build with nnpack support" OFF)
+tvm_option(USE_CSINN "Build with csinn support" OFF)
 tvm_option(USE_RANDOM "Build with random support" ON)
 tvm_option(USE_MICRO_STANDALONE_RUNTIME "Build with micro.standalone_runtime support" OFF)
 tvm_option(USE_CPP_RPC "Build CPP RPC" OFF)
@@ -256,6 +259,16 @@ file(GLOB_RECURSE COMPILER_SRCS
     src/printer/*.cc
     src/support/*.cc
     )
+
+if(USE_PNNA)
+  file(GLOB_RECURSE PNNA_COMPILER_SRCS
+      thead/pnna/common/cnn_common/*.cpp
+      thead/pnna/offline/mapping_tool/*.cpp
+      thead/pnna/dependencies/external/jsoncpp/*.cpp
+      thead/pnna/dependencies/internal/hwconf_encode/*.cpp
+      )
+  list(APPEND COMPILER_SRCS ${PNNA_COMPILER_SRCS})
+endif()
 
 file(GLOB CODEGEN_SRCS
   src/target/*.cc
@@ -439,6 +452,7 @@ include(cmake/modules/contrib/Posit.cmake)
 include(cmake/modules/contrib/MicroStandaloneRuntime.cmake)
 include(cmake/modules/contrib/Sort.cmake)
 include(cmake/modules/contrib/NNPack.cmake)
+include(cmake/modules/contrib/CSINN.cmake)
 include(cmake/modules/contrib/HybridDump.cmake)
 include(cmake/modules/contrib/TFLite.cmake)
 include(cmake/modules/contrib/TF_TVMDSOOP.cmake)
@@ -578,7 +592,25 @@ target_include_directories(
 set(CRC16_INCLUDE_PATH "3rdparty/libcrc/include")
 target_include_directorieS(
   tvm_objs
-  PRIVATE "${CRC16_INCLUDE_PATH}")
+  PRIVATE "${CRC16_INCLUDE_PATH}"
+  )
+
+if(USE_PNNA)
+  target_include_directorieS(
+    tvm_objs
+    PUBLIC "thead/pnna/offline/mapping_tool"
+    PUBLIC "thead/pnna/offline/mapping_tool/cmd_stream"
+    PUBLIC "thead/pnna/offline/mapping_tool/steps"
+    PUBLIC "thead/pnna/runtime/libimgdnn/include/imgdnn"
+    PUBLIC "thead/pnna/common/cnn_common"
+    PUBLIC "thead/pnna/dependencies/external/jsoncpp"
+    PUBLIC "thead/pnna/dependencies/internal/defs/include/hwdefs"
+    PUBLIC "thead/pnna/dependencies/internal/hwconf_encode"
+    PUBLIC "thead/pnna/dependencies/internal/version"
+    )
+  target_compile_definitions(tvm_objs PRIVATE -DBUILD_PNNA)
+endif()
+
 target_include_directorieS(
   tvm_libinfo_objs
   PRIVATE "${CRC16_INCLUDE_PATH}")

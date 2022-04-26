@@ -568,16 +568,41 @@ RELAY_REGISTER_OP("nn.relu")
       return Array<te::Tensor>{topi::relu(inputs[0], 0.0f)};
     });
 
+// swish
+TVM_REGISTER_GLOBAL("relay.op.nn._make.swish").set_body_typed([](Expr data) {
+  static const Op& op = Op::Get("nn.swish");
+  return Call(op, {data}, Attrs(), {});
+});
+
+RELAY_REGISTER_OP("nn.swish")
+    .describe(R"code(Computes the Swish activation function.
+
+.. math::
+   x * sigmoid(x)
+
+)code" TVM_ADD_FILELINE)
+    .set_num_inputs(1)
+    .add_argument("data", "Tensor", "The input tensor.")
+    .set_support_level(1)
+    .add_type_rel("Identity", IdentityRel)
+    .set_attr<FInferCorrectLayout>("FInferCorrectLayout", ElemwiseArbitraryLayout)
+    .set_attr<FTVMCompute>("FTVMCompute", [](const Attrs& attrs, const Array<te::Tensor>& inputs,
+                                             const Type& out_type) {
+      return Array<te::Tensor>{topi::multiply(inputs[0], topi::sigmoid(inputs[0]))};
+    });
+
 // Positional relay function to create LRN operator used by frontend FFI.
 TVM_REGISTER_NODE_TYPE(LRNAttrs);
 
-Expr MakeLRN(Expr data, int size, int axis, double alpha, double beta, double bias) {
+Expr MakeLRN(Expr data, int size, int axis, double alpha, double beta, double bias,
+             String norm_region) {
   auto attrs = make_object<LRNAttrs>();
   attrs->size = size;
   attrs->axis = axis;
   attrs->alpha = alpha;
   attrs->beta = beta;
   attrs->bias = bias;
+  attrs->norm_region = norm_region;
   static const Op& op = Op::Get("nn.lrn");
   return Call(op, {data}, Attrs(attrs), {});
 }
@@ -1330,6 +1355,85 @@ RELAY_REGISTER_OP("nn.space_to_depth")
     .add_argument("data", "Tensor", "The input tensor")
     .set_support_level(5)
     .add_type_rel("SpaceToDepth", SpaceToDepthRel);
+
+bool FsmnRel(const Array<Type>& types, int num_inputs, const Attrs& attrs,
+             const TypeReporter& reporter) {
+  CHECK_EQ(types.size(), 6);
+  const auto* data = types[0].as<TensorTypeNode>();
+  const auto* l_filter = types[1].as<TensorTypeNode>();
+  const auto* r_filter = types[2].as<TensorTypeNode>();
+  const auto* frame_sequence = types[3].as<TensorTypeNode>();
+  if (data == nullptr) return false;
+
+  const FsmnAttrs* param = attrs.as<FsmnAttrs>();
+  CHECK(param != nullptr);
+  const int l_order = param->l_order;
+  const int r_order = param->r_order;
+  const int l_stride = param->l_stride;
+  const int r_stride = param->r_stride;
+
+  auto oshape = data->shape;
+  auto l_filter_shape = l_filter->shape;
+  auto r_filter_shape = r_filter->shape;
+  auto frame_sequence_shape = frame_sequence->shape;
+
+  tvm::tir::ExprDeepEqual()(l_filter_shape[0], l_order);
+  tvm::tir::ExprDeepEqual()(l_filter_shape[1], oshape[1]);
+  tvm::tir::ExprDeepEqual()(r_filter_shape[0], r_order);
+  tvm::tir::ExprDeepEqual()(r_filter_shape[1], oshape[1]);
+  tvm::tir::ExprDeepEqual()(frame_sequence_shape[0],
+                            r_order * r_stride + (l_order - 1) * l_stride + 1);
+  tvm::tir::ExprDeepEqual()(frame_sequence_shape[1], oshape[1]);
+
+  reporter->Assign(types[5], TensorType(oshape, data->dtype));
+
+  return true;
+}
+
+TVM_REGISTER_NODE_TYPE(FsmnAttrs);
+
+Expr MakeFsmn(Expr frame, Expr l_filter, Expr r_filter, Expr frame_sequence, Expr frame_counter,
+              int l_order, int r_order, int l_stride, int r_stride, int unavailable_frames) {
+  auto attrs = make_object<FsmnAttrs>();
+  attrs->l_order = std::move(l_order);
+  attrs->r_order = std::move(r_order);
+  attrs->l_stride = std::move(l_stride);
+  attrs->r_stride = std::move(r_stride);
+  attrs->unavailable_frames = std::move(unavailable_frames);
+  static const Op& op = Op::Get("nn.fsmn");
+  return Call(op, {frame, l_filter, r_filter, frame_sequence, frame_counter}, Attrs(attrs), {});
+}
+
+TVM_REGISTER_GLOBAL("relay.op.nn._make.fsmn").set_body_typed(MakeFsmn);
+
+RELAY_REGISTER_OP("nn.fsmn")
+    .describe(R"code(Feedforwward sequential memory network.
+
+- **frame**: data is a 2D array of shape
+            (1, length)
+
+- **l_filter**: l_filter is a 2D array of shape
+            (l_order, length)
+
+- **r_filter**: r_filter is a 2D array of shape
+            (l_order, length)
+
+- **frame_sequence**:
+            (l_order + r_order, length)
+
+- **out**: Output is a 2D array of shape
+            (1, length).
+
+)code" TVM_ADD_FILELINE)
+    .set_attrs_type<FsmnAttrs>()
+    .set_num_inputs(5)
+    .add_argument("data", "Tensor", "The input tensor")
+    .add_argument("l_filter", "Tensor", "The parameter tensor")
+    .add_argument("r_filter", "Tensor", "The parameter tensor")
+    .add_argument("frame_counter", "Tensor", "count passed frames")
+    .add_argument("frame_sequence", "Tensor", "Temporary space to hold past and future frames")
+    .set_support_level(5)
+    .add_type_rel("Fsmn", FsmnRel);
 
 // Positional relay function to create SpaceToBatchND operator
 // used by frontend FFI

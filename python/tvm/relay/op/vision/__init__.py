@@ -20,6 +20,13 @@ from .multibox import *
 from .nms import *
 from .rcnn import *
 from .yolo import *
+from .psroipooling import *
+from .max_pool2d_location import *
+from .invert_permutation import *
+from .unpooling import *
+from .categorical import *
+from .random import *
+from .extract_image_patches import *
 from . import _rcnn
 from . import _yolo
 from . import _vision

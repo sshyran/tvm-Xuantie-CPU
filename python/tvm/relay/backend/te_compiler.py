@@ -180,12 +180,12 @@ def select_implementation(op, attrs, inputs, out_type, target, use_autotvm=True)
 
     # If not use autotvm, always return the implementation with the highest priority
     if not use_autotvm:
-        logger.info(
-            "Using %s for %s based on highest priority (%d)",
-            best_plevel_impl.name,
-            op.name,
-            best_plevel_impl.plevel,
-        )
+        #        logger.info(
+        #            "Using %s for %s based on highest priority (%d)",
+        #            best_plevel_impl.name,
+        #            op.name,
+        #            best_plevel_impl.plevel,
+        #        )
         outs = best_plevel_impl.compute(attrs, inputs, out_type)
         return best_plevel_impl, outs
 
@@ -209,7 +209,7 @@ def select_implementation(op, attrs, inputs, out_type, target, use_autotvm=True)
         if cfg.is_fallback:
             # Skip fallback config
             continue
-        logger.info("Implementation %s for %s has cost %.2e", impl.name, op.name, cfg.cost)
+        #        logger.info("Implementation %s for %s has cost %.2e", impl.name, op.name, cfg.cost)
         if best_cfg is None or best_cfg.cost > cfg.cost:
             best_autotvm_impl = impl
             best_cfg = cfg
@@ -217,12 +217,12 @@ def select_implementation(op, attrs, inputs, out_type, target, use_autotvm=True)
 
     if best_autotvm_impl:
         # The best autotvm implementation definitely doesn't use fallback config
-        logger.info(
-            "Using %s for %s based on lowest cost (%.2e)",
-            best_autotvm_impl.name,
-            op.name,
-            best_cfg.cost,
-        )
+        #        logger.info(
+        #            "Using %s for %s based on lowest cost (%.2e)",
+        #            best_autotvm_impl.name,
+        #            op.name,
+        #            best_cfg.cost,
+        #        )
         return best_autotvm_impl, outputs[best_autotvm_impl]
 
     # Use the implementation with highest plevel
@@ -244,7 +244,7 @@ def select_implementation(op, attrs, inputs, out_type, target, use_autotvm=True)
                     "One or more operators have not been tuned. Please tune your model "
                     "for better performance. Use DEBUG logging level to see more details."
                 )
-                autotvm_logger.warning(info_msg)
+                autotvm_logger.debug(info_msg)
             autotvm_logger.debug(msg)
 
     logger.info(
@@ -253,6 +253,7 @@ def select_implementation(op, attrs, inputs, out_type, target, use_autotvm=True)
         op.name,
         best_plevel_impl.plevel,
     )
+
     return best_plevel_impl, outputs[best_plevel_impl]
 
 

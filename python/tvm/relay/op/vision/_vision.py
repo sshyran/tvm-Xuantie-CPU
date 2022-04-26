@@ -48,6 +48,30 @@ reg.register_pattern("vision.non_max_suppression", OpPattern.OPAQUE)
 reg.register_strategy("vision.all_class_non_max_suppression", strategy.all_class_nms_strategy)
 reg.register_pattern("vision.all_class_non_max_suppression", OpPattern.OPAQUE)
 
+# psroipooling
+reg.register_strategy("vision.psroipooling", strategy.psroipooling_strategy)
+reg.register_pattern("vision.psroipooling", OpPattern.OPAQUE)
+
+# max_pool2d_location
+reg.register_strategy("vision.max_pool2d_location", strategy.max_pool2d_location_strategy)
+reg.register_pattern("vision.max_pool2d_location", OpPattern.OPAQUE)
+
+# categorical
+reg.register_strategy("vision.categorical", strategy.categorical_strategy)
+reg.register_pattern("vision.categorical", OpPattern.OPAQUE)
+
+# invert_permutation
+reg.register_strategy("vision.invert_permutation", strategy.invert_permutation_strategy)
+reg.register_pattern("vision.invert_permutation", OpPattern.OPAQUE)
+
+# standard_normal
+reg.register_strategy("vision.standard_normal", strategy.standard_normal_strategy)
+reg.register_pattern("vision.standard_normal", OpPattern.OPAQUE)
+
+# unpooling
+reg.register_strategy("vision.unpooling", strategy.unpooling_strategy)
+reg.register_pattern("vision.unpooling", OpPattern.OPAQUE)
+
 
 @script
 def _get_valid_counts_shape_func(data_shape):

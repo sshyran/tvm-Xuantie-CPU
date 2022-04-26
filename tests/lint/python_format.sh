@@ -18,4 +18,5 @@
 
 
 ./tests/lint/git-black.sh HEAD~1
-./tests/lint/git-black.sh origin/main
+
+./tests/lint/git-black.sh tvm-hhb-0.0.8

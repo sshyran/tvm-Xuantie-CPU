@@ -122,7 +122,9 @@ set(USE_MICRO_STANDALONE_RUNTIME OFF)
 # - OFF: disable llvm, note this will disable CPU codegen
 #        which is needed for most cases
 # - /path/to/llvm-config: enable specific LLVM when multiple llvm-dev is available.
-set(USE_LLVM OFF)
+# example:
+# set(USE_LLVM "/home/zhangwm/git/tvm/llvm_install/bin/llvm-config")
+set(USE_LLVM ON)
 
 #---------------------------------------------
 # Contrib libraries
@@ -154,13 +156,19 @@ set(USE_MKLDNN OFF)
 
 # Whether use OpenMP thread pool, choices: gnu, intel
 # Note: "gnu" uses gomp library, "intel" uses iomp5 library
-set(USE_OPENMP none)
+set(USE_OPENMP gnu)
 
 # Whether use contrib.random in runtime
 set(USE_RANDOM ON)
 
 # Whether use NNPack
 set(USE_NNPACK OFF)
+
+# Whether use CSI-NN
+# - ON: enable CSI-NN with cmake's find search
+# - OFF: disable CSI-NN
+# - /path/to/install_nn2: use specific path to CSI-NN library
+set(USE_CSINN ON)
 
 # Possible values:
 # - ON: enable tflite with cmake's find search
@@ -297,6 +305,21 @@ set(USE_TARGET_ONNX OFF)
 
 # Whether enable BNNS runtime
 set(USE_BNNS OFF)
+
+# Whether enable PNNA compiler
+#
+# Possible values:
+# - ON: enable pnna with cmake's auto search
+# - OFF: disable pnna
+# - /path/to/pnna-source: use specific path to pnna-source
+set(USE_PNNA ON)
+
+OPTION(ENABLE_GCOV "Enable gcov (debug, Linux builds only)" OFF)
+IF (ENABLE_GCOV AND NOT WIN32 AND NOT APPLE)
+  SET(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fprofile-arcs -ftest-coverage")
+  SET(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -fprofile-arcs -ftest-coverage")
+  SET(CMAKE_EXE_LINKER_FLAGS_DEBUG "${CMAKE_EXE_LINKER_FLAGS_DEBUG} -fprofile-arcs -ftest-coverage -lgcov")
+ENDIF()
 
 # Whether to use libbacktrace
 # Libbacktrace provides line and column information on stack traces from errors.

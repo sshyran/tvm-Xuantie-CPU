@@ -150,6 +150,8 @@ HYBRID_GLOBALS = {
     "float64": numpy.float64,
     "ceil_div": lambda a, b: (a + b - 1) // b,
     "max_num_threads": max_num_threads,
+    "floor": numpy.floor,
+    "ceil": numpy.ceil,
     "inf": inf,
     "ninf": inf,
 }

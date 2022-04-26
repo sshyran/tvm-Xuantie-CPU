@@ -20,9 +20,11 @@
 This file contains the set of passes for Relay, which exposes an interface for
 configuring the passes and scripting them in Python.
 """
+
 from ...ir import IRModule
 from ...relay import transform, build_module
 from ...runtime.ndarray import cpu
+from ...target import Target
 
 from . import _ffi_api
 from .feature import Feature
@@ -268,6 +270,30 @@ def get_total_mac_number(expr):
       The number of MACs (multiply-accumulate) of a model
     """
     return _ffi_api.GetTotalMacNumber(expr)
+
+
+def get_aitrace_data(expr, target=None):
+    """
+    Profile model and get some statistic information, such as calculation amount,
+    memory info etc.
+
+    Parameters
+    ----------
+    expr : tvm.relay.Expr
+        The input expression
+
+    target : str, :any:`tvm.target.Target`, or dict of str(i.e. device/context
+    name) to str/tvm.target.Target, optional
+        For profiler tools, it is a config target.
+
+    Returns
+    -------
+    result : Array[Map[str, Map[str, objectref]]]
+        All profiler information of each layer.
+    """
+    if not target:
+        target = Target("trace -type=all")
+    return _ffi_api.GetAiTraceData(expr, target)
 
 
 def unmatched_cases(match, mod=None):
