@@ -81,6 +81,12 @@ ALLOW_EXTENSION = {
     "idl",
     # opencl file
     "cl",
+    # pyinstall
+    "spec",
+    # template for HHB
+    "tp",
+    "cpp",
+    "hpp",
     # zephyr config file
     "conf",
     # arduino sketch file
@@ -133,6 +139,27 @@ ALLOW_SPECIFIC_FILE = {
     "docs/_static/img/tvm-logo-square.png",
     # pytest config
     "pytest.ini",
+    "docs/matplotlib.inv",
+    "docs/numpy.inv",
+    "docs/python.inv",
+    "docs/scipy.inv",
+    # needed by HHB
+    "docker/hhb_script/apt_sources.list",
+    "scripts/hhb.spec",
+    "scripts/yapf_style.cfg",
+    "t-head/csi_source/acuity-ovxlib-dev/include/custom/custom_node_type.def",
+    "t-head/csi_source/acuity-ovxlib-dev/include/custom/custom_ops.def",
+    "tests/thead/images/0.jpg",
+    "tests/thead/images/004545.jpg",
+    "tests/thead/images/cat.png",
+    "tests/thead/images/leftImg8bit.png",
+    "tests/thead/images/n01440764_188.JPEG",
+    "thead/caffe.proto",
+    "thead/cmd/config/anole.tp",
+    "thead/cmd/config/thead.tp",
+    "thead/cmd/config/light.tp",
+    "thead/cmd/config/anole_multithread.tp",
+    "docker/dockerfile.hhb_cpu",
     # microTVM tests
     "tests/micro/testdata/mnist/digit-2.jpg",
     "tests/micro/testdata/mnist/digit-9.jpg",
@@ -177,6 +204,9 @@ def filename_allowed(name):
         return True
 
     if name.startswith("3rdparty"):
+        return True
+
+    if name.startswith("thead"):
         return True
 
     if name in ALLOW_SPECIFIC_FILE:

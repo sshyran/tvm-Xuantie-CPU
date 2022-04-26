@@ -473,6 +473,31 @@ struct MatrixSetDiagAttrs : public tvm::AttrsNode<MatrixSetDiagAttrs> {
   }
 };  // struct MatrixSetDiagAttrs
 
+struct SegmentAttrs : public tvm::AttrsNode<SegmentAttrs> {
+  int num_segments;
+
+  TVM_DECLARE_ATTRS(SegmentAttrs, "relay.attrs.SegmentAttrs") {
+    TVM_ATTR_FIELD(num_segments).set_default(0).describe("The maximum of segment_ids.");
+  }
+};  // struct SegmentAttrs
+
+struct HardmaxAttrs : public tvm::AttrsNode<HardmaxAttrs> {
+  Integer axis;
+
+  TVM_DECLARE_ATTRS(HardmaxAttrs, "relay.attrs.HardmaxAttrs") {
+    TVM_ATTR_FIELD(axis).set_default(0).describe("The axis over which to select values.");
+  }
+};  // struct HardmaxAttrs
+
+struct CeluAttrs : public tvm::AttrsNode<CeluAttrs> {
+  double alpha;
+
+  TVM_DECLARE_ATTRS(CeluAttrs, "relay.attrs.CeluAttrs") {
+    TVM_ATTR_FIELD(alpha).set_default(1.0).describe(
+        "The Alpha value in Celu formula which control the shape of the unit.");
+  }
+};  // struct CeluAttrs
+
 /*! \brief Attributes used in cumsum and cumprod operator */
 struct ScanopAttrs : public tvm::AttrsNode<ScanopAttrs> {
   Integer axis;

@@ -610,6 +610,8 @@ TVM_REGISTER_GLOBAL("transform.EnterPassContext").set_body_typed(PassContext::In
 
 TVM_REGISTER_GLOBAL("transform.ExitPassContext").set_body_typed(PassContext::Internal::ExitScope);
 
+std::string dump_ir(const ObjectRef& node) { return AsText(node, false, NULL); }
+
 TVM_REGISTER_GLOBAL("transform.OverrideInstruments")
     .set_body_typed([](PassContext pass_ctx, Array<instrument::PassInstrument> instruments) {
       pass_ctx.InstrumentExitPassContext();

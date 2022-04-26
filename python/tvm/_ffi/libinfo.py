@@ -47,6 +47,7 @@ def get_dll_directories():
     # An installed TVM's curr_path will look something like:
     #   $PREFIX/lib/python3.6/site-packages/tvm/_ffi
     ffi_dir = os.path.dirname(os.path.realpath(os.path.expanduser(__file__)))
+    hhb_dir = os.path.join(ffi_dir, "..", "..")
     source_dir = os.path.join(ffi_dir, "..", "..", "..")
     install_lib_dir = os.path.join(ffi_dir, "..", "..", "..", "..")
 
@@ -71,6 +72,13 @@ def get_dll_directories():
     dll_path.append(os.path.join(source_dir, "build", "Release"))
     # Default make build directory
     dll_path.append(os.path.join(source_dir, "lib"))
+    # Default csinn directory
+    dll_path.append(os.path.join(source_dir, "install_nn2", "lib"))
+    # hhb install dir
+    dll_path.append(os.path.join(hhb_dir, "install_nn2", "lib"))
+    # imgdnn install dir
+    dll_path.append(os.path.join(source_dir, "build", "pnna", "runtime", "libimgdnn"))
+    dll_path.append(os.path.join(source_dir, "build", "pnna", "runtime", "libnna"))
 
     dll_path.append(install_lib_dir)
 
@@ -166,6 +174,7 @@ def find_include_path(name=None, search_path=None, optional=False):
         List of all found paths to header files.
     """
     ffi_dir = os.path.dirname(os.path.abspath(os.path.expanduser(__file__)))
+    hhb_dir = os.path.join(ffi_dir, "..", "..")
     source_dir = os.path.join(ffi_dir, "..", "..", "..")
 
     third_party_dir = os.path.join(source_dir, "3rdparty")
@@ -177,6 +186,7 @@ def find_include_path(name=None, search_path=None, optional=False):
 
     header_path.append(source_dir)
     header_path.append(third_party_dir)
+    header_path.append(hhb_dir)
 
     header_path = [os.path.abspath(x) for x in header_path]
     if search_path is not None:
@@ -197,11 +207,13 @@ def find_include_path(name=None, search_path=None, optional=False):
         tvm_include_path = [os.path.join(p, "include") for p in header_path]
         dlpack_include_path = [os.path.join(p, "dlpack/include") for p in header_path]
         dmlc_include_path = [os.path.join(p, "dmlc-core/include") for p in header_path]
+        csinn2_include_path = [os.path.join(p, "install_nn2/include") for p in header_path]
 
         # try to find include path
         include_found = [p for p in tvm_include_path if os.path.exists(p) and os.path.isdir(p)]
         include_found += [p for p in dlpack_include_path if os.path.exists(p) and os.path.isdir(p)]
         include_found += [p for p in dmlc_include_path if os.path.exists(p) and os.path.isdir(p)]
+        include_found += [p for p in csinn2_include_path if os.path.exists(p) and os.path.isdir(p)]
 
     if not include_found:
         message = (

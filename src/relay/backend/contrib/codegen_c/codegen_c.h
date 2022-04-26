@@ -32,6 +32,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+using std::string;
 
 namespace tvm {
 namespace relay {
@@ -42,6 +43,12 @@ struct Output {
   std::string dtype;
   int size;
   bool need_copy;
+  const tvm::relay::CallNode* call;
+  std::vector<int> shape;
+  int index;
+
+  bool is_const;
+  std::vector<string> names;
 };
 
 struct GenerateBodyOutput {
@@ -349,18 +356,24 @@ class CodegenCBase {
    *
    * \return The dtype string.
    */
-  std::string GetDtypeString(const TensorTypeNode* ttype) {
+  std::string GetDtypeString(const TensorTypeNode* ttype) { return GetDtypeString(ttype->dtype); }
+
+  std::string GetDtypeString(DataType i_dtype) {
     std::string dtype;
-    if (runtime::TypeMatch(ttype->dtype, kDLFloat, 32)) {
+    if (runtime::TypeMatch(i_dtype, kDLFloat, 32)) {
       dtype = "float";
-    } else if (runtime::TypeMatch(ttype->dtype, kDLFloat, 16)) {
+    } else if (runtime::TypeMatch(i_dtype, kDLFloat, 16)) {
       dtype = "half";
-    } else if (runtime::TypeMatch(ttype->dtype, kDLInt, 32)) {
-      dtype = "int";
-    } else if (runtime::TypeMatch(ttype->dtype, kDLInt, 64)) {
+    } else if (runtime::TypeMatch(i_dtype, kDLInt, 32)) {
+      dtype = "int32_t";
+    } else if (runtime::TypeMatch(i_dtype, kDLInt, 64)) {
       dtype = "int64_t";
+    } else if (runtime::TypeMatch(i_dtype, kDLInt, 8)) {
+      dtype = "int8_t";
+    } else if (runtime::TypeMatch(i_dtype, kDLUInt, 8)) {
+      dtype = "uint8_t";
     } else {
-      LOG(FATAL) << "Unsupported dtype " << ttype->dtype;
+      LOG(FATAL) << "Unsupported dtype " << i_dtype;
     }
 
     return dtype;

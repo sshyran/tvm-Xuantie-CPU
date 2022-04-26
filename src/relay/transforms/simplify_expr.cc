@@ -43,7 +43,8 @@ namespace relay {
 
 /*!
  * \brief SimplifyReshape matches the pattern of consecutive reshape or reverse_reshape ops,
- *   and merges into one reshape op.
+ *   and merges into one reshape op. Meanwhile, remove extra reshape op while the shape of output
+ *   in preceding layer equals to the that of the current reshape op.
  */
 class SimplifyReshape : public DFPatternRewrite {
  public:

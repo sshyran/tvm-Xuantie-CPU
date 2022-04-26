@@ -137,7 +137,7 @@ def conv2d_strategy_cpu(attrs, inputs, out_type, target):
         elif layout == "NHWC":
             assert kernel_layout == "HWIO"
             if not is_auto_scheduler_enabled():
-                logger.warning("conv2d NHWC layout is not optimized for x86 with autotvm.")
+                logger.info("conv2d NHWC layout is not optimized for x86 with autotvm.")
             strategy.add_implementation(
                 wrap_compute_conv2d(topi.nn.conv2d_nhwc, need_auto_scheduler_layout=True),
                 wrap_topi_schedule(topi.x86.schedule_conv2d_nhwc),
@@ -175,7 +175,7 @@ def conv2d_strategy_cpu(attrs, inputs, out_type, target):
         elif layout == "HWCN":
             assert kernel_layout == "HWIO"
             if not is_auto_scheduler_enabled():
-                logger.warning("conv2d HWCN layout is not optimized for x86 with autotvm.")
+                logger.info("conv2d HWCN layout is not optimized for x86 with autotvm.")
             strategy.add_implementation(
                 wrap_compute_conv2d(topi.nn.conv2d_hwcn),
                 wrap_topi_schedule(topi.generic.schedule_conv2d_hwcn),
@@ -209,9 +209,7 @@ def conv2d_strategy_cpu(attrs, inputs, out_type, target):
         elif layout == "NHWC":
             assert kernel_layout == "HWOI"
             if not is_auto_scheduler_enabled():
-                logger.warning(
-                    "depthwise_conv2d NHWC layout is not optimized for x86 with autotvm."
-                )
+                logger.info("depthwise_conv2d NHWC layout is not optimized for x86 with autotvm.")
             strategy.add_implementation(
                 wrap_compute_conv2d(topi.nn.depthwise_conv2d_nhwc),
                 wrap_topi_schedule(topi.generic.schedule_depthwise_conv2d_nhwc),
@@ -222,6 +220,7 @@ def conv2d_strategy_cpu(attrs, inputs, out_type, target):
     else:  # group_conv2d
         if layout == "NCHW":
             assert kernel_layout == "OIHW"
+            # logger.warning("group_conv2d is not optimized for x86.")
             strategy.add_implementation(
                 wrap_compute_conv2d(topi.x86.group_conv2d_nchw, has_groups=True),
                 wrap_topi_schedule(topi.x86.schedule_group_conv2d_nchw),

@@ -368,6 +368,12 @@ inline std::vector<int> GetShape(const Type& type) {
   return shape;
 }
 
+inline DataType GetType(const Type& type) {
+  const auto* ttype = type.as<TensorTypeNode>();
+  ICHECK(ttype) << "Expect TensorTypeNode";
+  return ttype->dtype;
+}
+
 /*!
  * \brief Check if a call has the provided name.
  * \param call A Relay call node.

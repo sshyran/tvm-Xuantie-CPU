@@ -19,6 +19,9 @@ import os
 import re
 
 import numpy as np
+import math
+import onnx
+from onnx import helper, TensorProto, mapping, numpy_helper
 import pytest
 import scipy
 import torch
@@ -127,8 +130,13 @@ def get_tvm_output(
             tvm_output_list.append(tvm_output.numpy())
         return tvm_output_list
     else:
-        tvm_output = m.get_output(0)
-        return tvm_output.numpy()
+        if m.get_num_outputs() == 1:
+            tvm_output = m.get_output(0)
+            return tvm_output.numpy()
+        tvm_output = list()
+        for i in range(m.get_num_outputs()):
+            tvm_output.append(m.get_output(i).asnumpy())
+        return tvm_output
 
 
 def get_onnxruntime_output(model, inputs):
@@ -3516,6 +3524,50 @@ def test_global_lppool(target, dev):
     )
 
 
+def verify_global_lppool(x_shape, p, out_shape):
+    pool_node = helper.make_node(
+        "GlobalLpPool",
+        inputs=["x"],
+        outputs=["y"],
+        p=p,
+    )
+
+    graph = helper.make_graph(
+        [pool_node],
+        "global_lppool_test",
+        inputs=[helper.make_tensor_value_info("x", TensorProto.FLOAT, list(x_shape))],
+        outputs=[helper.make_tensor_value_info("y", TensorProto.FLOAT, list(out_shape))],
+    )
+
+    model = helper.make_model(graph, producer_name="global_lppool_test")
+    verify_with_ort(model, [x_shape], out_shape)
+
+
+@tvm.testing.uses_gpu
+def test_global_lppool():
+
+    # Pool2D
+    verify_global_lppool(
+        x_shape=[1, 15, 32, 32],
+        p=2,
+        out_shape=[1, 15, 1, 1],
+    )
+
+    # Pool2D
+    verify_global_lppool(
+        x_shape=[1, 15, 32, 32],
+        p=3,
+        out_shape=[1, 15, 1, 1],
+    )
+
+    # Pool3D
+    verify_global_lppool(
+        x_shape=[1, 15, 3, 32, 32],
+        p=2,
+        out_shape=[1, 15, 1, 1, 1],
+    )
+
+
 def verify_rnn(
     seq_length,
     batch_size,
@@ -5422,6 +5474,880 @@ def test_qlinearconv(target, dev):
     )
 
 
+def verify_concat_from_sequence(in_shapes, axis, new_axis):
+    np_inputs = [np.random.rand(*shape).astype("float32") for shape in in_shapes]
+    if new_axis:
+        out_np = np.stack(np_inputs, axis=axis)
+    else:
+        out_np = np.concatenate(np_inputs, axis=axis)
+    output_dims = list(out_np.shape)
+
+    input_names = ["input_" + str(i) for i, _ in enumerate(np_inputs)]
+
+    seq_construct_node = onnx.helper.make_node("SequenceConstruct", input_names, ["seq_1"])
+    seq_concat_node = onnx.helper.make_node("ConcatFromSequence", ["seq_1"], ["out"], axis=1)
+
+    graph = onnx.helper.make_graph(
+        nodes=[seq_construct_node, seq_concat_node],
+        name="concat_from_sequence",
+        inputs=[
+            onnx.helper.make_tensor_value_info(name, onnx.TensorProto.FLOAT, input_shape)
+            for name, input_shape in zip(input_names, in_shapes)
+        ],
+        outputs=[onnx.helper.make_tensor_value_info("out", onnx.TensorProto.FLOAT, output_dims)],
+    )
+    model = helper.make_model(graph, producer_name="concat_from_sequence_test")
+    verify_with_ort_with_inputs(model, np_inputs, output_dims)
+
+
+@tvm.testing.uses_gpu
+def test_concat_from_sequence():
+    verify_concat_from_sequence([[3, 3, 3]] * 3, 0, 0)
+    verify_concat_from_sequence([[3, 3, 3]] * 3, 1, 0)
+    verify_concat_from_sequence([[3, 3, 3]] * 3, 2, 0)
+    verify_concat_from_sequence([[3, 3, 3]] * 3, 0, 1)
+    verify_concat_from_sequence([[3, 3, 3]] * 3, 1, 1)
+    verify_concat_from_sequence([[3, 3, 3]] * 3, 2, 1)
+    verify_concat_from_sequence([[4, 3, 5, 6]] * 3, 0, 0)
+    verify_concat_from_sequence([[4, 3, 5, 6]] * 3, 1, 0)
+    verify_concat_from_sequence([[4, 3, 5, 6]] * 3, 2, 0)
+    verify_concat_from_sequence([[4, 3, 5, 6]] * 3, 3, 0)
+    verify_concat_from_sequence([[4, 3, 5, 6]] * 3, 0, 1)
+    verify_concat_from_sequence([[4, 3, 5, 6]] * 3, 1, 1)
+    verify_concat_from_sequence([[4, 3, 5, 6]] * 3, 2, 1)
+    verify_concat_from_sequence([[4, 3, 5, 6]] * 3, 3, 1)
+
+
+def verify_hardmax(x_shape, axis=None):
+    kwargs = dict()
+    if axis:
+        kwargs["axis"] = axis
+    node = helper.make_node(
+        "Hardmax",
+        inputs=["x"],
+        outputs=["y"],
+        **kwargs,
+    )
+
+    graph = helper.make_graph(
+        [node],
+        "hardmax_test",
+        inputs=[helper.make_tensor_value_info("x", TensorProto.FLOAT, list(x_shape))],
+        outputs=[helper.make_tensor_value_info("y", TensorProto.FLOAT, list(x_shape))],
+    )
+
+    model = helper.make_model(graph, producer_name="hardmax_test")
+    verify_with_ort(model, [x_shape], x_shape)
+
+
+@tvm.testing.uses_gpu
+def test_hardmax():
+    verify_hardmax(x_shape=[2, 4])
+    verify_hardmax(x_shape=[2, 4], axis=1)
+    verify_hardmax(x_shape=[3, 5, 4])
+    verify_hardmax(x_shape=[3, 5, 4], axis=0)
+    verify_hardmax(x_shape=[3, 5, 4], axis=1)
+    verify_hardmax(x_shape=[2, 3, 5, 4])
+    verify_hardmax(x_shape=[2, 3, 5, 4], axis=0)
+    verify_hardmax(x_shape=[2, 3, 5, 4], axis=1)
+    verify_hardmax(x_shape=[2, 3, 5, 4], axis=2)
+    verify_hardmax(x_shape=[2, 3, 5, 4], axis=3)
+
+
+def verify_maxunpool(xT, xI, out_shape):
+    node = onnx.helper.make_node(
+        "MaxUnpool", inputs=["xT", "xI"], outputs=["y"], kernel_shape=[2, 2], strides=[2, 2]
+    )
+    graph = helper.make_graph(
+        [node],
+        "maxunpool_test",
+        inputs=[
+            helper.make_tensor_value_info("xT", TensorProto.FLOAT, list(xT.shape)),
+            helper.make_tensor_value_info("xI", TensorProto.INT64, list(xI.shape)),
+        ],
+        outputs=[helper.make_tensor_value_info("y", TensorProto.FLOAT, list(out_shape))],
+    )
+
+    model = helper.make_model(graph, producer_name="maxunpool_test")
+    verify_with_ort_with_inputs(model, [xT, xI], list(out_shape))
+
+
+@tvm.testing.uses_gpu
+def test_maxunpool():
+    xT = np.array([[[[1, 2], [3, 4]]]], dtype=np.float32)
+    xI = np.array([[[[5, 7], [13, 15]]]], dtype=np.int64)
+    y = np.array([[[[0, 0, 0, 0], [0, 1, 0, 2], [0, 0, 0, 0], [0, 3, 0, 4]]]], dtype=np.float32)
+    verify_maxunpool(xT, xI, [1, 1, 4, 4])
+
+
+def verify_reverse_sequence(x, sequence_lens, batch_axis, time_axis):
+    node = onnx.helper.make_node(
+        "ReverseSequence",
+        inputs=["x", "sequence_lens"],
+        outputs=["y"],
+        time_axis=time_axis,
+        batch_axis=batch_axis,
+    )
+
+    graph = helper.make_graph(
+        [node],
+        "reverse_sequence_test",
+        inputs=[
+            helper.make_tensor_value_info("x", TensorProto.FLOAT, list(x.shape)),
+            helper.make_tensor_value_info(
+                "sequence_lens", TensorProto.INT64, list(sequence_lens.shape)
+            ),
+        ],
+        outputs=[helper.make_tensor_value_info("y", TensorProto.FLOAT, list(x.shape))],
+    )
+
+    model = helper.make_model(graph, producer_name="reverse_sequence_test")
+    verify_with_ort_with_inputs(model, [x, sequence_lens], list(x.shape))
+
+
+@tvm.testing.uses_gpu
+def test_reverse_sequence():
+    x = np.array(
+        [[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11], [12, 13, 14, 15]],
+        dtype=np.float32,
+    )
+    sequence_lens = np.array([1, 2, 3, 4], dtype=np.int64)
+    y = np.array(
+        [[0, 5, 10, 15], [4, 1, 6, 11], [8, 9, 2, 7], [12, 13, 14, 3]],
+        dtype=np.float32,
+    )
+    verify_reverse_sequence(x, sequence_lens, 0, 1)
+
+    y = np.array(
+        [[0, 1, 2, 3], [5, 4, 6, 7], [10, 9, 8, 11], [15, 14, 13, 12]],
+        dtype=np.float32,
+    )
+    verify_reverse_sequence(x, sequence_lens, 1, 0)
+
+
+def verify_cumsum(in_shape, axis, exclusive, reverse):
+    node = onnx.helper.make_node(
+        "CumSum",
+        inputs=["x", "axis"],
+        outputs=["y"],
+    )
+
+    axis_tensor = helper.make_tensor("axis_data", TensorProto.INT32, [1], vals=[axis])
+    axis_node = helper.make_node("Constant", inputs=[], outputs=["axis"], value=axis_tensor)
+
+    graph = helper.make_graph(
+        [axis_node, node],
+        "cumsum_test",
+        inputs=[helper.make_tensor_value_info("x", TensorProto.FLOAT, list(in_shape))],
+        outputs=[helper.make_tensor_value_info("y", TensorProto.FLOAT, list(in_shape))],
+    )
+
+    model = helper.make_model(graph, producer_name="cumsum_test")
+
+    onnx.checker.check_model(model)
+    verify_with_ort(model, [in_shape], in_shape)
+
+
+@tvm.testing.uses_gpu
+def test_cumsum():
+    verify_cumsum([5], 0, 0, 0)
+    verify_cumsum([5], 0, 0, 1)
+    verify_cumsum([5], 0, 1, 0)
+    verify_cumsum([5], 0, 1, 1)
+    verify_cumsum([3, 3], 0, 0, 0)
+    verify_cumsum([3, 3], 0, 0, 1)
+    verify_cumsum([3, 3], 0, 1, 0)
+    verify_cumsum([3, 3], 0, 1, 1)
+    verify_cumsum([3, 3], 1, 0, 0)
+    verify_cumsum([3, 3], 1, 0, 1)
+    verify_cumsum([3, 3], 1, 1, 0)
+    verify_cumsum([3, 3], 1, 1, 1)
+    verify_cumsum([5, 3, 3], 0, 0, 0)
+    verify_cumsum([5, 3, 3], 0, 0, 1)
+    verify_cumsum([5, 3, 3], 0, 1, 0)
+    verify_cumsum([5, 3, 3], 0, 1, 1)
+    verify_cumsum([5, 3, 3], 1, 0, 0)
+    verify_cumsum([5, 3, 3], 1, 0, 1)
+    verify_cumsum([5, 3, 3], 1, 1, 0)
+    verify_cumsum([5, 3, 3], 1, 1, 1)
+    verify_cumsum([5, 3, 3], 2, 0, 0)
+    verify_cumsum([5, 3, 3], 2, 0, 1)
+    verify_cumsum([5, 3, 3], 2, 1, 0)
+    verify_cumsum([5, 3, 3], 2, 1, 1)
+    verify_cumsum([1, 3, 16, 16], 0, 0, 0)
+    verify_cumsum([1, 3, 16, 16], 0, 0, 1)
+    verify_cumsum([1, 3, 16, 16], 0, 1, 0)
+    verify_cumsum([1, 3, 16, 16], 0, 1, 1)
+    verify_cumsum([1, 3, 16, 16], 1, 0, 0)
+    verify_cumsum([1, 3, 16, 16], 1, 0, 1)
+    verify_cumsum([1, 3, 16, 16], 1, 1, 1)
+    verify_cumsum([1, 3, 16, 16], 2, 0, 0)
+    verify_cumsum([1, 3, 16, 16], 2, 0, 1)
+    verify_cumsum([1, 3, 16, 16], 2, 1, 0)
+    verify_cumsum([1, 3, 16, 16], 2, 1, 1)
+    verify_cumsum([1, 3, 16, 16], 3, 0, 0)
+    verify_cumsum([1, 3, 16, 16], 3, 0, 1)
+    verify_cumsum([1, 3, 16, 16], 3, 1, 0)
+    verify_cumsum([1, 3, 16, 16], 3, 1, 1)
+
+
+def verify_split_to_sequence(in_shape, axis, indices_or_sections=None):
+    if isinstance(indices_or_sections, list):
+        len_out = len(indices_or_sections)
+    elif isinstance(indices_or_sections, int):
+        len_out = (
+            int(in_shape[axis] / indices_or_sections)
+            if in_shape[axis] / indices_or_sections == int(in_shape[axis] / indices_or_sections)
+            else int(in_shape[axis] / indices_or_sections) + 1
+        )
+
+    input_nodes = list()
+    for i in range(len_out):
+        pos_tensor = helper.make_tensor(f"pos{i}_data", TensorProto.INT32, [], vals=[i])
+        pos_node = helper.make_node("Constant", inputs=[], outputs=[f"pos{i}"], value=pos_tensor)
+        input_nodes.append(pos_node)
+
+    if indices_or_sections:
+        if isinstance(indices_or_sections, int):
+            split_tensor = helper.make_tensor(
+                "split_data", TensorProto.INT32, [], vals=[indices_or_sections]
+            )
+            split_node = helper.make_node(
+                "Constant", inputs=[], outputs=["indices_or_sections"], value=split_tensor
+            )
+        else:
+            split_tensor = helper.make_tensor(
+                "split_data",
+                TensorProto.INT32,
+                [len(indices_or_sections)],
+                vals=indices_or_sections,
+            )
+            split_node = helper.make_node(
+                "Constant", inputs=[], outputs=["indices_or_sections"], value=split_tensor
+            )
+
+        node = helper.make_node(
+            "SplitToSequence", ["x", "indices_or_sections"], ["seq_1"], axis=axis
+        )
+        input_nodes.append(split_node)
+    else:
+        node = helper.make_node("SplitToSequence", ["x"], ["seq_1"], axis=axis)
+    input_nodes.append(node)
+
+    for i in range(len_out):
+        out_node = helper.make_node("SequenceAt", ["seq_1", f"pos{i}"], [f"out_{i}"])
+        input_nodes.append(out_node)
+
+    graph = helper.make_graph(
+        input_nodes,
+        "split_sequence_test",
+        inputs=[helper.make_tensor_value_info("x", TensorProto.FLOAT, list(in_shape))],
+        outputs=[
+            onnx.helper.make_tensor_value_info(f"out_{i}", onnx.TensorProto.FLOAT, [])
+            for i in range(len_out)
+        ],
+    )
+    model = helper.make_model(graph, producer_name="split_sequence_test")
+
+    onnx.checker.check_model(model)
+    verify_with_ort(model, [in_shape])
+
+
+@tvm.testing.uses_gpu
+def test_split_to_sequence():
+    # SplitToSequence and SequenceAt
+    verify_split_to_sequence([10, 3, 4], -1, 2)
+    verify_split_to_sequence([10, 3, 4], 0, 2)
+    verify_split_to_sequence([10, 3, 4], 1, 2)
+    verify_split_to_sequence([10, 3, 4], 1, 2)
+    verify_split_to_sequence([10, 3, 4], 0, [1, 3, 6])
+    verify_split_to_sequence([10, 3, 4], 1, [1, 2])
+    verify_split_to_sequence([10, 3, 4], 2, [1, 3])
+
+
+def verify_sequence_length(in_shape, axis, indices_or_sections=None):
+    input_nodes = list()
+
+    split_tensor = helper.make_tensor(
+        "split_data",
+        TensorProto.INT32,
+        [len(indices_or_sections)],
+        vals=indices_or_sections,
+    )
+    split_node = helper.make_node(
+        "Constant", inputs=[], outputs=["indices_or_sections"], value=split_tensor
+    )
+
+    node = helper.make_node("SplitToSequence", ["x", "indices_or_sections"], ["seq_1"], axis=axis)
+    input_nodes.append(split_node)
+    input_nodes.append(node)
+
+    out_node = helper.make_node("SequenceLength", ["seq_1"], ["length"])
+    input_nodes.append(out_node)
+
+    graph = helper.make_graph(
+        input_nodes,
+        "sequence_length_test",
+        inputs=[helper.make_tensor_value_info("x", TensorProto.FLOAT, list(in_shape))],
+        outputs=[onnx.helper.make_tensor_value_info("length", onnx.TensorProto.INT64, [])],
+    )
+    model = helper.make_model(graph, producer_name="sequence_length_tests")
+
+    onnx.checker.check_model(model)
+    verify_with_ort(model, [in_shape])
+
+
+@tvm.testing.uses_gpu
+def test_sequence_length():
+    verify_sequence_length([10, 3, 4], 0, [3, 7])
+    verify_sequence_length([10, 3, 4], 0, [1, 3, 6])
+    verify_sequence_length([10, 3, 4], 0, [1, 3, 3, 3])
+
+
+def verify_size(in_shape):
+
+    node = helper.make_node("Size", ["x"], ["y"])
+    graph = helper.make_graph(
+        [node],
+        "size_test",
+        inputs=[helper.make_tensor_value_info("x", TensorProto.FLOAT, list(in_shape))],
+        outputs=[onnx.helper.make_tensor_value_info("y", onnx.TensorProto.INT64, [])],
+    )
+    model = helper.make_model(graph, producer_name="size_test")
+
+    onnx.checker.check_model(model)
+    verify_with_ort(model, [in_shape])
+
+
+@tvm.testing.uses_gpu
+def test_size():
+    verify_size([10])
+    verify_size([10, 3])
+    verify_size([10, 3, 4])
+    verify_size([10, 3, 4, 5])
+
+
+def verify_celu(in_shape, alpha):
+
+    node = helper.make_node("Celu", ["x"], ["y"], alpha=alpha)
+    graph = helper.make_graph(
+        [node],
+        "celu_test",
+        inputs=[helper.make_tensor_value_info("x", TensorProto.FLOAT, in_shape)],
+        outputs=[onnx.helper.make_tensor_value_info("y", onnx.TensorProto.FLOAT, in_shape)],
+    )
+    model = helper.make_model(graph, producer_name="celu_test")
+
+    onnx.checker.check_model(model)
+    verify_with_ort(model, [in_shape])
+
+
+@tvm.testing.uses_gpu
+def test_celu():
+    verify_celu([10], alpha=1.1)
+    verify_celu([10, 3], alpha=1.2)
+    verify_celu([10, 3, 4], alpha=1.3)
+    verify_celu([10, 3, 4, 5], alpha=2.0)
+
+
+@tvm.testing.uses_gpu
+def test_size():
+    verify_size([10])
+    verify_size([10, 3])
+    verify_size([10, 3, 4])
+    verify_size([10, 3, 4, 5])
+
+
+def verify_quantize_linear(x, scale, zero_point, axis):
+
+    node = onnx.helper.make_node(
+        "QuantizeLinear",
+        inputs=["x", "scale", "zero_point"],
+        outputs=["y"],
+        axis=axis,
+    )
+
+    graph = helper.make_graph(
+        [node],
+        "quantize_linear_test",
+        inputs=[
+            helper.make_tensor_value_info("x", TensorProto.FLOAT, list(x.shape)),
+            helper.make_tensor_value_info("scale", TensorProto.FLOAT, list(scale.shape)),
+            helper.make_tensor_value_info("zero_point", TensorProto.UINT8, list(zero_point.shape)),
+        ],
+        outputs=[onnx.helper.make_tensor_value_info("y", onnx.TensorProto.UINT8, list(x.shape))],
+    )
+    model = helper.make_model(graph, producer_name="quantize_linear_test")
+
+    onnx.checker.check_model(model)
+    verify_with_ort_with_inputs(model, [x, scale, zero_point])
+
+
+@tvm.testing.uses_gpu
+def test_quantize_linear():
+    # channel
+    x = np.array(
+        [
+            [
+                [[-162, 10], [-100, 232], [-20, -50]],
+                [[-76, 0], [0, 252], [32, -44]],
+                [[245, -485], [-960, -270], [-375, -470]],
+            ],
+        ],
+        dtype=np.float32,
+    )
+    scale = np.array([2, 4, 5], dtype=np.float32)
+    zero_point = np.array([84, 24, 196], dtype=np.uint8)
+    verify_quantize_linear(x, scale, zero_point, axis=1)
+
+    # universal
+    x = np.array([0, 2, 2.5, 1000, -254, -1000]).astype(np.float32)
+    scale = np.float32([2])
+    zero_point = np.uint8([128])
+    verify_quantize_linear(x, scale, zero_point, axis=1)
+
+
+def verify_dequantize_linear(x, scale, zero_point, axis):
+
+    node = onnx.helper.make_node(
+        "DequantizeLinear",
+        inputs=["x", "scale", "zero_point"],
+        outputs=["y"],
+        axis=axis,
+    )
+
+    graph = helper.make_graph(
+        [node],
+        "quantize_linear_test",
+        inputs=[
+            helper.make_tensor_value_info("x", TensorProto.UINT8, list(x.shape)),
+            helper.make_tensor_value_info("scale", TensorProto.FLOAT, list(scale.shape)),
+            helper.make_tensor_value_info("zero_point", TensorProto.UINT8, list(zero_point.shape)),
+        ],
+        outputs=[onnx.helper.make_tensor_value_info("y", onnx.TensorProto.FLOAT, list(x.shape))],
+    )
+    model = helper.make_model(graph, producer_name="quantize_linear_test")
+
+    onnx.checker.check_model(model)
+    verify_with_ort_with_inputs(model, [x, scale, zero_point])
+
+
+@tvm.testing.uses_gpu
+def test_dequantize_linear():
+    # channel
+    x = np.array(
+        [
+            [
+                [[3, 89], [34, 200], [74, 59]],
+                [[5, 24], [24, 87], [32, 13]],
+                [[245, 99], [4, 142], [121, 102]],
+            ],
+        ],
+        dtype=np.uint8,
+    )
+    scale = np.array([2, 4, 5], dtype=np.float32)
+    zero_point = np.array([84, 24, 196], dtype=np.uint8)
+    verify_dequantize_linear(x, scale, zero_point, axis=1)
+
+    # universal
+    x = np.array([0, 3, 128, 255]).astype(np.uint8)
+    scale = np.float32([2])
+    zero_point = np.uint8([128])
+    verify_dequantize_linear(x, scale, zero_point, axis=1)
+
+
+def verify_convinteger(x, w, x_zero_point, w_zero_point, out_shape, attr):
+
+    node = onnx.helper.make_node(
+        "ConvInteger", inputs=["x", "w", "x_zero_point", "w_zero_point"], outputs=["y"], **attr
+    )
+
+    graph = helper.make_graph(
+        [node],
+        "convinteger_test",
+        inputs=[
+            helper.make_tensor_value_info("x", TensorProto.UINT8, list(x.shape)),
+            helper.make_tensor_value_info("w", TensorProto.UINT8, list(w.shape)),
+            helper.make_tensor_value_info(
+                "x_zero_point", TensorProto.UINT8, list(x_zero_point.shape)
+            ),
+            helper.make_tensor_value_info(
+                "w_zero_point", TensorProto.UINT8, list(w_zero_point.shape)
+            ),
+        ],
+        outputs=[onnx.helper.make_tensor_value_info("y", onnx.TensorProto.INT32, out_shape)],
+    )
+    model = helper.make_model(graph, producer_name="convinteger_test")
+
+    onnx.checker.check_model(model)
+    verify_with_ort_with_inputs(model, [x, w, x_zero_point, w_zero_point])
+
+
+@tvm.testing.uses_gpu
+def test_convinteger():
+    # without padding
+    x = np.array([2, 3, 4, 5, 6, 7, 8, 9, 10]).astype(np.uint8).reshape((1, 1, 3, 3))
+    x_zero_point = np.uint8([1])
+    w = np.array([1, 1, 1, 1]).astype(np.uint8).reshape((1, 1, 2, 2))
+    w_zero_point = np.uint8([1])
+    out_shape = [1, 1, 2, 2]
+    verify_convinteger(x, w, x_zero_point, w_zero_point, out_shape, {})
+
+    # # with padding
+    out_shape = [1, 1, 4, 4]
+    attr = dict()
+    attr["pads"] = [1, 1, 1, 1]
+    verify_convinteger(x, w, x_zero_point, w_zero_point, out_shape, attr)
+
+    # with auto pad
+    x = np.array(
+        [
+            [
+                [
+                    [0.0, 1.0, 2.0, 3.0, 4.0],
+                    [5.0, 6.0, 7.0, 8.0, 9.0],
+                    [10.0, 11.0, 12.0, 13.0, 14.0],
+                    [15.0, 16.0, 17.0, 18.0, 19.0],
+                    [20.0, 21.0, 22.0, 23.0, 24.0],
+                ]
+            ]
+        ]
+    ).astype(np.uint8)
+    w = np.array(
+        [
+            [
+                [
+                    [1.0, 1.0, 1.0],
+                    [1.0, 1.0, 1.0],
+                    [1.0, 1.0, 1.0],
+                ]
+            ]
+        ]
+    ).astype(np.uint8)
+    attr = dict()
+    attr["auto_pad"] = "SAME_UPPER"
+    attr["kernel_shape"] = [3, 3]
+    attr["strides"] = [2, 2]
+    out_shape = [1, 1, 3, 3]
+    verify_convinteger(x, w, x_zero_point, w_zero_point, out_shape, attr)
+
+
+def verify_qlinearconv(
+    x,
+    x_scale,
+    x_zero_point,
+    w,
+    w_scale,
+    w_zero_point,
+    y_scale,
+    y_zero_point,
+    out_shape,
+    attr,
+    bias=None,
+):
+    inputs_node = [
+        helper.make_tensor_value_info("x", TensorProto.UINT8, list(x.shape)),
+        helper.make_tensor_value_info("x_scale", TensorProto.FLOAT, list(x_scale.shape)),
+        helper.make_tensor_value_info("x_zero_point", TensorProto.UINT8, list(x_zero_point.shape)),
+        helper.make_tensor_value_info("w", TensorProto.UINT8, list(w.shape)),
+        helper.make_tensor_value_info("w_scale", TensorProto.FLOAT, list(w_scale.shape)),
+        helper.make_tensor_value_info("w_zero_point", TensorProto.UINT8, list(w_zero_point.shape)),
+        helper.make_tensor_value_info("y_scale", TensorProto.FLOAT, list(y_scale.shape)),
+        helper.make_tensor_value_info("y_zero_point", TensorProto.UINT8, list(y_zero_point.shape)),
+    ]
+    inputs_tensor = [x, x_scale, x_zero_point, w, w_scale, w_zero_point, y_scale, y_zero_point]
+    if bias:
+        node = onnx.helper.make_node(
+            "QLinearConv",
+            inputs=[
+                "x",
+                "x_scale",
+                "x_zero_point",
+                "w",
+                "w_scale",
+                "w_zero_point",
+                "y_scale",
+                "y_zero_point",
+                "bias",
+            ],
+            outputs=["y"],
+            **attr,
+        )
+        inputs_node.append(
+            helper.make_tensor_value_info("bias", TensorProto.INT32, list(bias.shape))
+        )
+        inputs_tensor.append(bias)
+    else:
+        node = onnx.helper.make_node(
+            "QLinearConv",
+            inputs=[
+                "x",
+                "x_scale",
+                "x_zero_point",
+                "w",
+                "w_scale",
+                "w_zero_point",
+                "y_scale",
+                "y_zero_point",
+            ],
+            outputs=["y"],
+        )
+
+    graph = helper.make_graph(
+        [node],
+        "qlinearconv_test",
+        inputs=inputs_node,
+        outputs=[onnx.helper.make_tensor_value_info("y", onnx.TensorProto.UINT8, out_shape)],
+    )
+    model = helper.make_model(graph, producer_name="qlinearconv_test")
+
+    onnx.checker.check_model(model)
+    verify_with_ort_with_inputs(model, inputs_tensor, rtol=1e-5, atol=1)
+
+
+@tvm.testing.uses_gpu
+def test_qlinearconv():
+    # without padding
+    x = np.array(
+        [
+            [255, 174, 162, 25, 203, 168, 58],
+            [15, 59, 237, 95, 129, 1, 58],
+            [56, 242, 153, 221, 168, 12, 166],
+            [232, 178, 186, 195, 237, 162, 237],
+            [188, 39, 124, 77, 80, 102, 43],
+            [127, 237, 21, 83, 41, 40, 166],
+            [255, 154, 92, 141, 42, 148, 247],
+        ],
+        dtype=np.uint8,
+    ).reshape((1, 1, 7, 7))
+
+    x_scale = np.float32([0.00369204697])
+    x_zero_point = np.uint8([132])
+
+    w = np.array([0], dtype=np.uint8).reshape((1, 1, 1, 1))
+
+    w_scale = np.array([0.00172794575], dtype=np.float32)
+    w_zero_point = np.array([255], dtype=np.uint8)
+
+    y_scale = np.float32([0.00162681262])
+    y_zero_point = np.uint8([123])
+
+    out_shape = [1, 1, 7, 7]
+
+    verify_qlinearconv(
+        x, x_scale, x_zero_point, w, w_scale, w_zero_point, y_scale, y_zero_point, out_shape, {}
+    )
+
+    # with auto_pad
+    w = np.array(
+        [
+            [
+                [
+                    [1.0, 1.0, 1.0],
+                    [1.0, 1.0, 1.0],
+                    [1.0, 1.0, 1.0],
+                ]
+            ]
+        ]
+    ).astype(np.uint8)
+    attr = dict()
+    attr["auto_pad"] = "SAME_UPPER"
+    attr["kernel_shape"] = [3, 3]
+    attr["strides"] = [2, 2]
+    out_shape = [1, 1, 5, 5]
+    verify_qlinearconv(
+        x, x_scale, x_zero_point, w, w_scale, w_zero_point, y_scale, y_zero_point, out_shape, attr
+    )
+
+    # with bias
+    w = np.array(
+        [
+            [
+                [
+                    [1.0, 1.0, 1.0],
+                    [1.0, 1.0, 1.0],
+                    [1.0, 1.0, 1.0],
+                ]
+            ]
+        ]
+    ).astype(np.uint8)
+    b = np.array([5000], dtype=np.int32)
+    attr = dict()
+    attr["auto_pad"] = "SAME_UPPER"
+    attr["kernel_shape"] = [3, 3]
+    attr["strides"] = [2, 2]
+    out_shape = [1, 1, 4, 4]
+    verify_qlinearconv(
+        x,
+        x_scale,
+        x_zero_point,
+        w,
+        w_scale,
+        w_zero_point,
+        y_scale,
+        y_zero_point,
+        out_shape,
+        attr,
+        b,
+    )
+
+
+def verify_matmulinteger(A, B, a_zp, b_zp, out_shape):
+
+    node = onnx.helper.make_node(
+        "MatMulInteger",
+        inputs=["A", "B", "a_zero_point", "b_zero_point"],
+        outputs=["Y"],
+    )
+
+    graph = helper.make_graph(
+        [node],
+        "matmulinteger_test",
+        inputs=[
+            helper.make_tensor_value_info("A", TensorProto.UINT8, list(A.shape)),
+            helper.make_tensor_value_info("B", TensorProto.UINT8, list(B.shape)),
+            helper.make_tensor_value_info("a_zero_point", TensorProto.UINT8, list(a_zp.shape)),
+            helper.make_tensor_value_info("b_zero_point", TensorProto.UINT8, list(b_zp.shape)),
+        ],
+        outputs=[onnx.helper.make_tensor_value_info("Y", onnx.TensorProto.INT32, out_shape)],
+    )
+    model = helper.make_model(graph, producer_name="matmulinteger_test")
+    onnx.checker.check_model(model)
+    verify_with_ort_with_inputs(model, [A, B, a_zp, b_zp])
+
+
+@tvm.testing.uses_gpu
+def test_matmulinteger():
+    a_zero_point = np.array([12], dtype=np.uint8)
+    b_zero_point = np.array([0], dtype=np.uint8)
+
+    # 2D
+    A = np.random.randint(0, 255, (4, 3), dtype=np.uint8)
+    B = np.random.randint(0, 255, (3, 2), dtype=np.uint8)
+    out_shape = [4, 2]
+    verify_matmulinteger(A, B, a_zero_point, b_zero_point, out_shape)
+
+    # 3D
+    A = np.random.randint(0, 255, (3, 4, 3), dtype=np.uint8)
+    B = np.random.randint(0, 255, (3, 3, 2), dtype=np.uint8)
+    out_shape = [3, 4, 2]
+    verify_matmulinteger(A, B, a_zero_point, b_zero_point, out_shape)
+
+
+def verify_qlinearmatmul(
+    a, a_scale, a_zero_point, b, b_scale, b_zero_point, y_scale, y_zero_point, out_shape
+):
+
+    node = onnx.helper.make_node(
+        "QLinearMatMul",
+        inputs=[
+            "a",
+            "a_scale",
+            "a_zero_point",
+            "b",
+            "b_scale",
+            "b_zero_point",
+            "y_scale",
+            "y_zero_point",
+        ],
+        outputs=["y"],
+    )
+
+    graph = helper.make_graph(
+        [node],
+        "matmulinteger_test",
+        inputs=[
+            helper.make_tensor_value_info("a", TensorProto.UINT8, list(a.shape)),
+            helper.make_tensor_value_info("a_scale", TensorProto.FLOAT, list(a_scale.shape)),
+            helper.make_tensor_value_info(
+                "a_zero_point", TensorProto.UINT8, list(a_zero_point.shape)
+            ),
+            helper.make_tensor_value_info("b", TensorProto.UINT8, list(b.shape)),
+            helper.make_tensor_value_info("b_scale", TensorProto.FLOAT, list(b_scale.shape)),
+            helper.make_tensor_value_info(
+                "b_zero_point", TensorProto.UINT8, list(b_zero_point.shape)
+            ),
+            helper.make_tensor_value_info("y_scale", TensorProto.FLOAT, list(y_scale.shape)),
+            helper.make_tensor_value_info(
+                "y_zero_point", TensorProto.UINT8, list(y_zero_point.shape)
+            ),
+        ],
+        outputs=[onnx.helper.make_tensor_value_info("y", onnx.TensorProto.UINT8, out_shape)],
+    )
+    model = helper.make_model(graph, producer_name="matmulinteger_test")
+    inputs = [a, a_scale, a_zero_point, b, b_scale, b_zero_point, y_scale, y_zero_point]
+    onnx.checker.check_model(model)
+    verify_with_ort_with_inputs(model, inputs, rtol=1e-5, atol=1)
+
+
+@tvm.testing.uses_gpu
+def test_qlinearmatmul():
+    a_scale = np.random.rand(1).astype(np.float32)
+    b_scale = np.random.rand(1).astype(np.float32)
+    y_scale = np.random.rand(1).astype(np.float32)
+    a_zero_point = np.random.randint(0, 255, (1), dtype=np.uint8)
+    b_zero_point = np.random.randint(0, 255, (1), dtype=np.uint8)
+    y_zero_point = np.random.randint(0, 255, (1), dtype=np.uint8)
+
+    # 2D
+    a = np.random.randint(0, 255, (4, 3), dtype=np.uint8)
+    b = np.random.randint(0, 255, (3, 2), dtype=np.uint8)
+    out_shape = [4, 2]
+    verify_qlinearmatmul(
+        a, a_scale, a_zero_point, b, b_scale, b_zero_point, y_scale, y_zero_point, out_shape
+    )
+
+    # 3D
+    a = np.random.randint(0, 255, (3, 4, 3), dtype=np.uint8)
+    b = np.random.randint(0, 255, (3, 3, 2), dtype=np.uint8)
+    out_shape = [3, 4, 2]
+    verify_qlinearmatmul(
+        a, a_scale, a_zero_point, b, b_scale, b_zero_point, y_scale, y_zero_point, out_shape
+    )
+
+
+def verify_dynamicquantizelinear(x):
+
+    node = onnx.helper.make_node(
+        "DynamicQuantizeLinear",
+        inputs=[
+            "x",
+        ],
+        outputs=["y", "y_scale", "y_zero_point"],
+    )
+
+    graph = helper.make_graph(
+        [node],
+        "dynamicquantizelinear_test",
+        inputs=[
+            helper.make_tensor_value_info("x", TensorProto.FLOAT, list(x.shape)),
+        ],
+        outputs=[
+            onnx.helper.make_tensor_value_info("y", onnx.TensorProto.UINT8, list(x.shape)),
+            onnx.helper.make_tensor_value_info("y_scale", onnx.TensorProto.FLOAT, []),
+            onnx.helper.make_tensor_value_info("y_zero_point", onnx.TensorProto.UINT8, []),
+        ],
+    )
+    model = helper.make_model(graph, producer_name="dynamicquantizelinear_test")
+    onnx.checker.check_model(model)
+    verify_with_ort_with_inputs(model, [x])
+
+
+@tvm.testing.uses_gpu
+def test_dynamicquantizelinear():
+    shape = [4, 3]
+    x = np.random.rand(*shape) * np.random.randint(-1000, 1000, shape)
+    verify_dynamicquantizelinear(x.astype(np.float32))
+
+    shape = [2, 4, 3]
+    x = np.random.rand(*shape) * np.random.randint(-1000, 1000, shape)
+    verify_dynamicquantizelinear(x.astype(np.float32))
+
+    shape = [5, 2, 4, 3]
+    x = np.random.rand(*shape) * np.random.randint(-1000, 1000, shape)
+    verify_dynamicquantizelinear(x.astype(np.float32))
+
+
 @tvm.testing.parametrize_targets
 def test_qlinearconcat(target, dev):
     def verify_qlinearconcat(shapes, out_shape, axis=None):
@@ -5850,14 +6776,29 @@ if __name__ == "__main__":
     test_xor()
     test_max_roi_pool()
     test_roi_align()
+    test_concat_from_sequence()
+    test_global_lppool()
+    test_hardmax()
+    test_maxunpool()
+    test_reverse_sequence()
+    test_cumsum()
+    test_split_to_sequence()
+    test_sequence_length()
+    test_size()
+    test_celu()
+    test_quantize_linear()
+    test_dequantize_linear()
+    test_convinteger()
+    test_qlinearconv()
+    test_matmulinteger()
+    test_qlinearmatmul()
+    test_dynamicquantizelinear()
     test_range()
     test_loop()
-    test_size()
-    test_maxunpool()
     test_softplus()
-    test_cumsum()
     test_wrong_input()
     test_aten()
+    test_eyelike()
     test_index_put()
     test_reverse_sequence()
     test_eyelike()

@@ -527,5 +527,48 @@ RELAY_REGISTER_UNARY_OP("isinf")
     .add_type_rel("IdentityCompRel", IdentityCompRel)
     .set_attr<FTVMCompute>("FTVMCompute", RELAY_UNARY_COMPUTE(topi::isinf));
 
+// relay.hardmax
+TVM_REGISTER_NODE_TYPE(HardmaxAttrs);
+
+Expr MakeHardmax(Expr data, int axis) {
+  auto attrs = make_object<HardmaxAttrs>();
+  attrs->axis = std::move(axis);
+  static const Op& op = Op::Get("hardmax");
+  return Call(op, {data}, Attrs(attrs), {});
+}
+
+TVM_REGISTER_GLOBAL("relay.op._make.hardmax").set_body_typed(MakeHardmax);
+
+RELAY_REGISTER_OP("hardmax")
+    .describe(R"code(The operator computes the hardmax values for the given input.
+)code" TVM_ADD_FILELINE)
+    .set_num_inputs(1)
+    .add_argument("data", "Tensor", "The input tensor.")
+    .set_support_level(5)
+    .add_type_rel("Identity", IdentityRel);
+
+// relay.celu
+TVM_REGISTER_NODE_TYPE(CeluAttrs);
+
+Expr MakeCelu(Expr data, double alpha) {
+  auto attrs = make_object<CeluAttrs>();
+  attrs->alpha = std::move(alpha);
+  static const Op& op = Op::Get("celu");
+  return Call(op, {data}, Attrs(attrs), {});
+}
+
+TVM_REGISTER_GLOBAL("relay.op._make.celu").set_body_typed(MakeCelu);
+
+RELAY_REGISTER_OP("celu")
+    .describe(
+        R"code(Continuously Differentiable Exponential Linear Units: Perform the
+        linear unit element-wise on the input tensor X using formula:
+            max(0,x) + min(0,alpha*(exp(x/alpha)-1))
+)code" TVM_ADD_FILELINE)
+    .set_num_inputs(1)
+    .add_argument("data", "Tensor", "The input tensor.")
+    .set_support_level(5)
+    .add_type_rel("Identity", IdentityRel);
+
 }  // namespace relay
 }  // namespace tvm

@@ -40,6 +40,7 @@ from .transform import *
 from .algorithm import *
 from . import vm
 from . import nn
+from . import custom_op
 from . import annotation
 from . import memory
 from . import image

@@ -16,6 +16,10 @@
 # under the License.
 # pylint: disable=invalid-name, too-many-arguments, too-many-nested-blocks
 """Scatter operator"""
+
+from tvm.te import hybrid
+from tvm import tir
+from tvm.topi.utils import get_const_tuple
 from ..tir import decl_buffer, ir_builder, AssertStmt, StringImm, Evaluate, expr
 from ..te import extern, hybrid
 
@@ -159,6 +163,207 @@ def _scatter_4d(data, indices, updates, axis):
                         ] = updates[i, j, k, l]
 
     return out
+
+
+def _scatter_nd_1d(data, indices, updates, out_buf):
+
+    ib = tir.ir_builder.create()
+    input_data = ib.buffer_ptr(data)
+    indices_data = ib.buffer_ptr(indices)
+    updates_data = ib.buffer_ptr(updates)
+    out = ib.buffer_ptr(out_buf)
+
+    shape = get_const_tuple(data.shape)
+    size = 1
+    for s in shape:
+        size = size * s
+
+    with ib.for_range(0, size) as x:
+        out[x] = input_data[x]
+
+    with ib.for_range(0, indices.shape[0]) as i:
+        output_index = indices_data[i]
+        out[output_index] = updates_data[i]
+    return ib.get()
+
+
+def _scatter_nd_2d(data, indices, updates, out_buf):
+
+    ib = tir.ir_builder.create()
+    input_data = ib.buffer_ptr(data)
+    indices_data = ib.buffer_ptr(indices)
+    updates_data = ib.buffer_ptr(updates)
+    out = ib.buffer_ptr(out_buf)
+
+    shape = get_const_tuple(data.shape)
+    size = 1
+    for s in shape:
+        size = size * s
+
+    with ib.for_range(0, size) as x:
+        out[x] = input_data[x]
+
+    with ib.for_range(0, indices.shape[0]) as i:
+        with ib.for_range(0, indices.shape[1]) as j:
+            indices_base = i * indices.shape[1] * indices.shape[2] + j * indices.shape[2]
+
+            output_index = (
+                indices_data[indices_base] * data.shape[1] + indices_data[indices_base + 1]
+            )
+
+            updates_index = i * updates.shape[1] + j
+            out[output_index] = updates_data[updates_index]
+    return ib.get()
+
+
+def _scatter_nd_3d(data, indices, updates, out_buf):
+
+    ib = tir.ir_builder.create()
+    input_data = ib.buffer_ptr(data)
+    indices_data = ib.buffer_ptr(indices)
+    updates_data = ib.buffer_ptr(updates)
+    out = ib.buffer_ptr(out_buf)
+
+    shape = get_const_tuple(data.shape)
+    size = 1
+    for s in shape:
+        size = size * s
+
+    with ib.for_range(0, size) as x:
+        out[x] = input_data[x]
+
+    with ib.for_range(0, indices.shape[0]) as i:
+        with ib.for_range(0, indices.shape[1]) as j:
+            with ib.for_range(0, indices.shape[2]) as k:
+                indices_base = (
+                    i * indices.shape[1] * indices.shape[2] * indices.shape[3]
+                    + j * indices.shape[2] * indices.shape[3]
+                    + k * indices.shape[3]
+                )
+
+                output_index = (
+                    indices_data[indices_base] * data.shape[1] * data.shape[2]
+                    + indices_data[indices_base + 1] * data.shape[2]
+                    + indices_data[indices_base + 2]
+                )
+
+                updates_index = i * updates.shape[1] * updates.shape[2] + j * updates.shape[2] + k
+                out[output_index] = updates_data[updates_index]
+    return ib.get()
+
+
+def _scatter_nd_4d(data, indices, updates, out_buf):
+    ib = tir.ir_builder.create()
+    input_data = ib.buffer_ptr(data)
+    indices_data = ib.buffer_ptr(indices)
+    updates_data = ib.buffer_ptr(updates)
+    out = ib.buffer_ptr(out_buf)
+
+    shape = get_const_tuple(data.shape)
+    size = 1
+    for s in shape:
+        size = size * s
+
+    with ib.for_range(0, size) as x:
+        out[x] = input_data[x]
+
+    with ib.for_range(0, indices.shape[0]) as i:
+        with ib.for_range(0, indices.shape[1]) as j:
+            with ib.for_range(0, indices.shape[2]) as k:
+                with ib.for_range(0, indices.shape[3]) as l:
+                    indices_base = (
+                        i
+                        * indices.shape[1]
+                        * indices.shape[2]
+                        * indices.shape[3]
+                        * indices.shape[4]
+                        + j * indices.shape[2] * indices.shape[3] * indices.shape[4]
+                        + k * indices.shape[3] * indices.shape[4]
+                        + l * indices.shape[4]
+                    )
+
+                    output_index = (
+                        indices_data[indices_base] * data.shape[1] * data.shape[2] * data.shape[3]
+                        + indices_data[indices_base + 1] * data.shape[2] * data.shape[3]
+                        + indices_data[indices_base + 2] * data.shape[3]
+                        + indices_data[indices_base + 3]
+                    )
+
+                    updates_index = (
+                        i * updates.shape[1] * updates.shape[2] * updates.shape[3]
+                        + j * updates.shape[2] * updates.shape[3]
+                        + k * updates.shape[3]
+                        + l
+                    )
+                    out[output_index] = updates_data[updates_index]
+    return ib.get()
+
+
+def _scatter_nd_5d(data, indices, updates, out_buf):
+    ib = tir.ir_builder.create()
+    input_data = ib.buffer_ptr(data)
+    indices_data = ib.buffer_ptr(indices)
+    updates_data = ib.buffer_ptr(updates)
+    out = ib.buffer_ptr(out_buf)
+
+    shape = get_const_tuple(data.shape)
+    size = 1
+    for s in shape:
+        size = size * s
+
+    with ib.for_range(0, size) as x:
+        out[x] = input_data[x]
+
+    with ib.for_range(0, indices.shape[0]) as i:
+        with ib.for_range(0, indices.shape[1]) as j:
+            with ib.for_range(0, indices.shape[2]) as k:
+                with ib.for_range(0, indices.shape[3]) as l:
+                    with ib.for_range(0, indices.shape[4]) as m:
+                        indices_base = (
+                            i
+                            * indices.shape[1]
+                            * indices.shape[2]
+                            * indices.shape[3]
+                            * indices.shape[4]
+                            * indices.shape[5]
+                            + j
+                            * indices.shape[2]
+                            * indices.shape[3]
+                            * indices.shape[4]
+                            * indices.shape[5]
+                            + k * indices.shape[3] * indices.shape[4] * indices.shape[5]
+                            + l * indices.shape[4] * indices.shape[5]
+                            + m * indices.shape[5]
+                        )
+
+                        output_index = (
+                            indices_data[indices_base]
+                            * data.shape[1]
+                            * data.shape[2]
+                            * data.shape[3]
+                            * data.shape[4]
+                            + indices_data[indices_base + 1]
+                            * data.shape[2]
+                            * data.shape[3]
+                            * data.shape[4]
+                            + indices_data[indices_base + 2] * data.shape[3] * data.shape[4]
+                            + indices_data[indices_base + 3] * data.shape[4]
+                            + indices_data[indices_base + 4]
+                        )
+
+                        updates_index = (
+                            i
+                            * updates.shape[1]
+                            * updates.shape[2]
+                            * updates.shape[3]
+                            * updates.shape[4]
+                            + j * updates.shape[2] * updates.shape[3] * updates.shape[4]
+                            + k * updates.shape[3] * updates.shape[4]
+                            + l * updates.shape[4]
+                            + m
+                        )
+                        out[output_index] = updates_data[updates_index]
+    return ib.get()
 
 
 def scatter(data, indices, updates, axis=0):

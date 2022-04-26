@@ -32,7 +32,8 @@ from .transport import IoTimeoutError
 from .transport import TransportLogger
 
 try:
-    from .base import _rpc_connect
+    pass
+    # from .base import _rpc_connect
 except ImportError:
     raise ImportError("micro tvm is not enabled. Set USE_MICRO to ON in config.cmake")
 

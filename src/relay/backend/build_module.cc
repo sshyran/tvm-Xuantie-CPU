@@ -179,6 +179,11 @@ class RelayBuildModule : public runtime::ModuleNode {
         ICHECK_EQ(args.num_args, 5);
         this->Build(args[0], args[1], args[2], args[3], args[4]);
       });
+    } else if (name == "build_hhb") {
+      return PackedFunc([sptr_to_self, this](TVMArgs args, TVMRetValue* rv) {
+        CHECK_EQ(args.num_args, 4);
+        this->BuildHHB(args[0], args[1], args[2], args[3]);
+      });
     } else if (name == "list_params") {
       return PackedFunc(
           [sptr_to_self, this](TVMArgs args, TVMRetValue* rv) { *rv = this->ListParamNames(); });
@@ -294,6 +299,24 @@ class RelayBuildModule : public runtime::ModuleNode {
     executor_ = executor;
     CheckAndUpdateHostConsistency(&targets_, &target_host_);
     BuildRelay(mod, params_, mod_name);
+  }
+
+  /*!
+   * \brief Build relay IRModule for HHB runtime
+   *
+   * \param mod Relay IRModule
+   * \param target Target device
+   * \param target_host Host target device
+   */
+  void BuildHHB(IRModule mod, const TargetMap& targets, const tvm::Target& target_host,
+                const std::string& params_path) {
+    targets_ = targets;
+    target_host_ = target_host;
+
+    Target t_host = GetTargetHost();
+
+    auto pf = tvm::runtime::Registry::Get("relay.ext.csinn");
+    ret_.mod = (*pf)(mod, t_host, params_path);
   }
 
  protected:

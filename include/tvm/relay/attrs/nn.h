@@ -99,7 +99,12 @@ struct Conv1DAttrs : public tvm::AttrsNode<Conv1DAttrs> {
             "Dimension ordering of weight. Can be 'OIW', or 'WIO', etc."
             "'O', 'I', 'W' stands for num_filter, input_channel, and width"
             "dimensions respectively.");
-
+    TVM_ATTR_FIELD(out_layout)
+        .set_default("")
+        .describe(
+            "Dimension ordering of output. Can be 'NCW', 'NWC', etc."
+            "'N', 'C', 'W' stands for batch, channel, and width"
+            "dimensions respectively. Default to be same as input layout.");
     // use 0 bits to indicate none.
     TVM_ATTR_FIELD(out_dtype)
         .set_default(NullValue<DataType>())
@@ -1385,6 +1390,7 @@ struct LRNAttrs : public tvm::AttrsNode<LRNAttrs> {
   double bias;
   double alpha;
   double beta;
+  std::string norm_region;
 
   TVM_DECLARE_ATTRS(LRNAttrs, "relay.attrs.LRNAttrs") {
     TVM_ATTR_FIELD(size).set_default(5).describe(
@@ -1393,6 +1399,9 @@ struct LRNAttrs : public tvm::AttrsNode<LRNAttrs> {
     TVM_ATTR_FIELD(bias).set_default(2).describe("The offset parameter to avoid division by 0.");
     TVM_ATTR_FIELD(alpha).set_default(0.0001).describe("The scaling parameter.");
     TVM_ATTR_FIELD(beta).set_default(0.75).describe("The exponent parameter.");
+    TVM_ATTR_FIELD(norm_region)
+        .set_default("ACROSS_CHANNELS")
+        .describe("The norm region mode. ACROSS_CHANNELS or WITHIN_CHANNEL");
   }
 };
 
@@ -1532,6 +1541,27 @@ struct CorrelationAttrs : public tvm::AttrsNode<CorrelationAttrs> {
         "dimensions respectively.");
   }
 };  // struct CorrelationAttrs
+
+/*! \brief Attributes used in fsmn operators */
+struct FsmnAttrs : public tvm::AttrsNode<FsmnAttrs> {
+  int l_order;
+  int r_order;
+  int l_stride;
+  int r_stride;
+  int unavailable_frames;
+
+  TVM_DECLARE_ATTRS(FsmnAttrs, "relay.attrs.FsmnAttrs") {
+    TVM_ATTR_FIELD(l_order)
+        .describe("The number of past frames involved in the calculation.")
+        .set_default(0);
+    TVM_ATTR_FIELD(r_order)
+        .describe("The number of future frames involved in the calculation.")
+        .set_default(0);
+    TVM_ATTR_FIELD(l_stride).describe("Stride for past frames.").set_default(1);
+    TVM_ATTR_FIELD(r_stride).describe("Stride for future frames.").set_default(1);
+    TVM_ATTR_FIELD(unavailable_frames).describe("total of unavailable frames.").set_default(0);
+  }
+};  // struct FsmnAttrs
 
 /*! \brief Attributes used in SpaceToBatchND operator */
 struct SpaceToBatchNDAttrs : public tvm::AttrsNode<SpaceToBatchNDAttrs> {

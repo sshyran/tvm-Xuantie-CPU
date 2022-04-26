@@ -65,6 +65,21 @@ inline Expr MakeAvgPool(Expr data, Array<IndexExpr> pool_size, Array<IndexExpr> 
   return Call(op, {data}, Attrs(attrs), {});
 }
 
+template <typename T>
+Expr MakeMaxPoolWithArgmax(Expr data, Array<IndexExpr> pool_size, Array<IndexExpr> strides,
+                           Array<IndexExpr> dilation, Array<IndexExpr> padding, String layout,
+                           bool ceil_mode, String op_name) {
+  auto attrs = make_object<T>();
+  attrs->pool_size = std::move(pool_size);
+  attrs->strides = std::move(strides);
+  attrs->dilation = std::move(dilation);
+  attrs->padding = std::move(padding);
+  attrs->layout = std::move(layout);
+  attrs->ceil_mode = ceil_mode;
+  static const Op& op = Op::Get(op_name);
+  return Call(op, {data}, Attrs(attrs), {});
+}
+
 }  // namespace relay
 }  // namespace tvm
 #endif  // TVM_RELAY_OP_NN_POOLING_H_

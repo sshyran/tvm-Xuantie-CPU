@@ -77,7 +77,16 @@ class DebugResult(object):
             node = self._nodes_list[i]
             input_list = []
             for input_node in node["inputs"]:
-                input_list.append(self._nodes_list[input_node[0]]["name"])
+                if (
+                    "num_outputs" in self._nodes_list[input_node[0]]["attrs"]
+                    and int(self._nodes_list[input_node[0]]["attrs"]["num_outputs"]) > 1
+                ):
+                    if "input_index" not in node:
+                        node["input_index"] = []
+                    node["input_index"].append(input_node[1])
+                    input_list.append(self._nodes_list[input_node[0]]["name"])
+                else:
+                    input_list.append(self._nodes_list[input_node[0]]["name"])
             node["inputs"] = input_list
             dtype = str("type: " + self._dtype_list[1][i])
             if "attrs" not in node:
