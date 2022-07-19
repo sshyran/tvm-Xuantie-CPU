@@ -306,14 +306,6 @@ set(USE_TARGET_ONNX OFF)
 # Whether enable BNNS runtime
 set(USE_BNNS OFF)
 
-# Whether enable PNNA compiler
-#
-# Possible values:
-# - ON: enable pnna with cmake's auto search
-# - OFF: disable pnna
-# - /path/to/pnna-source: use specific path to pnna-source
-set(USE_PNNA ON)
-
 OPTION(ENABLE_GCOV "Enable gcov (debug, Linux builds only)" OFF)
 IF (ENABLE_GCOV AND NOT WIN32 AND NOT APPLE)
   SET(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fprofile-arcs -ftest-coverage")
