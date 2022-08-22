@@ -23,6 +23,7 @@ HHB is a is a collection of tools for deploying neural network models. It is pro
 Website
 ---------------
 
-- [Products page](https://occ.t-head.cn/development/series/index?spm=a2cl5.14300690.0.0.4aca475a4yHCxV&id=3865005559921381376&type=kind&softPlatformType=6#sticky)
-- [Document](https://www.yuque.com/za4k4z/oxlbxl)
-
+- [中文产品页面](https://occ.t-head.cn/development/series/index?spm=a2cl5.14300690.0.0.4aca475a4yHCxV&id=3865005559921381376&type=kind&softPlatformType=6#sticky)
+- [文档](https://www.yuque.com/za4k4z/oxlbxl)
+- [Products page](https://www.xrvm.com/tool-details?spm=xrvm.27145676.0.0.777f52699POkgp&id=4056748601592913921)
+- [Document](https://www.yuque.com/za4k4z/kvkcoh)
