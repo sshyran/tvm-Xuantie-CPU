@@ -25,6 +25,7 @@ from core.arguments_manage import (
     add_common_argument,
     add_postprocess_argument,
     add_codegen_argument,
+    add_hardware_argument,
     ArgumentFilter,
 )
 from core.common import (
@@ -52,11 +53,6 @@ from core.preprocess_manage import (
     collect_preprocess_config,
     set_preprocess_params,
 )
-from core.quantization_manage import (
-    collect_quantization_config,
-    set_quantize_params_by_board,
-    get_quantize_config,
-)
 
 # pylint: disable=invalid-name
 logger = logging.getLogger("HHB")
@@ -72,6 +68,7 @@ def add_codegen_parser(subparsers):
     add_optimize_argument(parser)
     add_postprocess_argument(parser)
     add_codegen_argument(parser)
+    add_hardware_argument(parser)
     add_common_argument(parser)
 
     parser.add_argument(
@@ -138,8 +135,7 @@ def driver_codegen(args_filter: ArgumentFilter):
         "i805",
         "c860",
         "c906",
-        "ch8601",
-        "dp1k",
+        "c908",
     ):
         if model_type != HHBIRType.QNN:
             raise HHBException(
@@ -175,9 +171,31 @@ def driver_codegen(args_filter: ArgumentFilter):
             os.path.join(args.FILE, qnn_ir.info_file)
         )
 
+        quantize_config["h_max_out_channel"] = args.hardware_max_out_channel
+        quantize_config["h_max_kernel_size"] = args.hardware_max_kernel_size
+        quantize_config["h_contain_weight"] = args.hardware_contain_weight
+        quantize_config["h_align"] = args.hardware_alignment
+        quantize_config["model_save"] = args.model_save
+        quantize_config["model_priority"] = args.codegen_config.model_priority
+        quantize_config["structed_sparsity"] = args.structed_sparsity
+        quantize_config["kernel_parallel"] = args.kernel_parallel
+        quantize_config["target"] = args.board
+        quantize_config["multi_thread"] = args.codegen_config.multithread
+
         if len(light_input_fix_size) == 2:
             quantize_config["light_input_fix_height"] = light_input_fix_size[0]
             quantize_config["light_input_fix_width"] = light_input_fix_size[1]
+        if args.board == "light" and args.codegen_config.model_save == "save_only":
+            quantize_config["target"] = "light_new"
+        if args.verbose >= 3:
+            quantize_config["debug_level"] = "INFO"
+        if args.codegen_config.model_save == "save_only":
+            quantize_config["h_sram_size"] = (
+                2 ** 20 if not args.hardware_sram_size else args.hardware_sram_size
+            )
+            quantize_config["h_max_groups"] = (
+                16 if not args.hardware_max_groups else args.hardware_max_groups
+            )
         quantize_config["trace_strategy"] = args.codegen_config.trace_strategy
         quantize_config["input_memory_type"] = args.codegen_config.input_memory_type
         quantize_config["output_memory_type"] = args.codegen_config.output_memory_type
@@ -187,10 +205,7 @@ def driver_codegen(args_filter: ArgumentFilter):
             args.board,
             args.opt_level,
             args.output,
-            args.verbose,
             quantize_config,
-            args.codegen_config.multithread,
-            args.codegen_config.model_save,
         )
 
         board_qnn_codegen_ir.save_model(

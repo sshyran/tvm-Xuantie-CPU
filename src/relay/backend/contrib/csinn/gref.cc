@@ -40,8 +40,20 @@ string CodegenGref::EmitGraph(void) {
   EmitSessionSetup();
   EmitSessionRun();
   DumpConstant();
-  return code_stream_.str();
+  return func_def_.str();
 }
+
+bool CodegenGref::IsIntegralOrNot(string const_kind) {
+  std::vector<string> per_channel = {"conv_kernel", "dense_kernel", "depthwise_kernel",
+                                     "conv_bias",   "dense_bias",   "depthwise_bias"};
+  if ((cfg->quantization_scheme == "CSINN_QUANT_INT8_ASYM_W_SYM" ||
+       cfg->quantization_scheme == "CSINN_QUANT_INT4_ASYM_W_SYM") &&
+      !is_contain_item<string>(per_channel, const_kind)) {
+    return true;
+  }
+  return false;
+}
+
 #if 0
 void CodegenGref::GetAsymScale(float min_value, float max_value, int bits, Qinfo* qinfo) {
   int valid_range = std::pow(2, bits) - 1;

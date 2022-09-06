@@ -44,7 +44,7 @@ All arguments are listed as follows:
 | -is, --input-shape | None | None | Set the shape of input nodes. Multiple shapes are separated by semicolon(;) and the dims between shape are separated by space. |
 | -on, --output-name | None | None | Set the name of output nodes. Multiple shapes are separated by semicolon(;). |
 | --model-format | ['keras', 'onnx', 'pb', 'tflite', 'pytorch', 'caffe', 'kaldi'] | None | Specify input model format:['keras', 'onnx', 'pb', 'tflite', 'pytorch', 'caffe', 'kaldi'] |
-| --board | ['anole', 'light', 'hlight', "asp", 'i805', 'c860', 'c906', 'c908', 'x86_ref', 'ch8601', 'dp1k', 'unset'] | unset | Set target device, default is anole. |
+| --board | ['anole', 'light', 'hlight', "asp", 'i805', 'c860', 'c906', 'c908', 'x86_ref', 'unset'] | unset | Set target device, default is anole. |
 | -cd, --calibrate-dataset | None | None | Provide with dataset for the input of model in reference step. Support dir or .npz .jpg .png .JPEG or .txt in which there are path of images. Note: only one image path in one line if .txt. |
 | --quantization-scheme | ['uint8_asym', 'int8_asym', 'int8_sym', 'int16_sym', 'float16', 'bfloat16', 'unset'] | unset | Scheme of quantization. default is unset, and select scheme by --board. |
 | --fuse-conv-relu | None | False | Fuse the convolution and relu layer. |
@@ -105,7 +105,7 @@ All arguments are listed as follows:
 | --channel-quantization | None | False | Do quantizetion across channel. |
 | --broadcast-quantization | None | False | Broadcast quantization parameters for special ops. |
 | --fuse-clip | None | False | Fuse clip's attr into pre layer's quantitative information. This flag is only valid when quantization is used. |
-| --board | ['anole', 'light', 'hlight', "asp", 'i805', 'c860', 'c906', 'c908', 'x86_ref', 'ch8601', 'dp1k', 'unset'] | unset | Set target device, default is anole. |
+| --board | ['anole', 'light', 'hlight', "asp", 'i805', 'c860', 'c906', 'c908', 'x86_ref', 'unset'] | unset | Set target device, default is anole. |
 | --config-file | None | None | Configue more complex parameters for executing the model. |
 | --generate-config | None | False | Generate  config file |
 | -o, --output | None | hhb_out | The directory that holds the quantized relay ir. |
@@ -121,7 +121,7 @@ All arguments are listed as follows:
 | Arguments | choices | default | Note |
 | ------------|---------|---------| ---- |
 | -h, --help | None | None | show this help message and exit |
-| --board | ['anole', 'light', 'hlight', "asp", 'i805', 'c860', 'c906', 'c908', 'x86_ref', 'ch8601', 'dp1k', 'unset'] | unset | Set target device, default is anole. |
+| --board | ['anole', 'light', 'hlight', "asp", 'i805', 'c860', 'c906', 'c908', 'x86_ref', 'unset'] | unset | Set target device, default is anole. |
 | --postprocess | ['top5', 'save', 'save_and_top5'] | top5 | Set the mode of postprocess: 'top5' show top5 of output; 'save' save output to file;'save_and_top5' show top5 and save output to file. Default is top5 |
 | --model-save | ['run_only', 'save_only', 'save_and_run'] | run_only | Whether save binary graph or run only. run_only: execute model only, not save binary graph. save_only: save binary graph only. save_and_run: execute and save model. |
 | --config-file | None | None | Configue more complex parameters for executing the model. |

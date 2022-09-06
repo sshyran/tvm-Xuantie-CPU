@@ -27,6 +27,7 @@ import numpy as np
 
 import tvm
 from tvm import relay
+from tvm.relay.quantize.quantize_hhb import _bind_params
 
 from core.frontend_manage import import_model
 from core.common import hhb_register_parse, HHBException, ensure_dir
@@ -85,7 +86,7 @@ def driver_profiler(args_filter: ArgumentFilter):
         from tvm.relay import transform as _transform
         from tvm.ir import transform
 
-        mod, _ = import_model(
+        mod, params = import_model(
             args.model_file, args.model_format, args.input_name, args.input_shape, args.output_name
         )
 
@@ -95,8 +96,18 @@ def driver_profiler(args_filter: ArgumentFilter):
             options = aitrace_options(args.indicator, os.path.join(args.output, "model.aitrace"))
         logger.debug('profile model with: "%s"', str(options))
 
-        opt_seq = [_transform.InferType()]
-        mod = transform.Sequential(opt_seq)(mod)
+        if params:
+            mod["main"] = _bind_params(mod["main"], params)
+            params = None
+
+        opt_seq = [
+            _transform.SimplifyInference(),
+            _transform.DynamicToStatic(),
+            _transform.FoldConstant(),
+            _transform.SimplifyExpr(),
+            _transform.InferType(),
+        ]
+        mod = transform.Sequential(opt_seq, opt_level=3)(mod)
 
         result = relay.analysis.get_aitrace_data(mod["main"], options)
         result = convert_tvm_trace2python(result)

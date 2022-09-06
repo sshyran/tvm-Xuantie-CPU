@@ -24,6 +24,7 @@
 #ifndef TVM_RELAY_BACKEND_CONTRIB_CSINN_CSINN_H_
 #define TVM_RELAY_BACKEND_CONTRIB_CSINN_CSINN_H_
 
+#include <tvm/ir/transform.h>
 #include <tvm/relay/attrs/nn.h>
 #include <tvm/relay/expr.h>
 #include <tvm/relay/expr_functor.h>
@@ -50,6 +51,8 @@
 #include "../../../quantize/quantize.h"
 #include "../../utils.h"
 #include "../codegen_c/codegen_c.h"
+#include "./format.h"
+#include "csi_nn.h"
 using std::string;
 using std::to_string;
 
@@ -72,35 +75,6 @@ enum {
   PER_CHANNEL = 1,
 };
 
-enum {
-  QINFO = 0,
-  CONSTANT = 1,
-};
-
-struct CSIConstant {
-  string name;
-  string dtype;
-  size_t size;
-  void* data_buf;
-};
-
-struct Qinfo {
-  int32_t zero_point;
-  float scale;
-  int32_t multiplier;
-  int32_t shift;
-  float min;
-  float max;
-};
-
-struct QuantParams {
-  struct Qinfo* qinfo;
-  string name;
-  std::vector<int> shape;
-  int32_t q_size;
-  int32_t offset;
-};
-
 struct QConfig_ {
   string quantization_scheme;
   string dtype_input;
@@ -114,13 +88,14 @@ struct QConfig_ {
   bool fuse_zp2bias;
 };
 
-#define HHB_VERSION "1.12.0"
+#define HHB_VERSION "2.0.4"
 
 /*! \brief Attributes to store the options for CSI-NN2 */
 struct CSINNConfigNode : public tvm::AttrsNode<CSINNConfigNode> {
   std::string sid;
   std::string target;
   std::string params_path;
+  std::string graph_info_path;
   std::string debug_level;
   std::string run_mode;
   std::string model_save;
@@ -132,6 +107,10 @@ struct CSINNConfigNode : public tvm::AttrsNode<CSINNConfigNode> {
   std::string quantization_scheme;
   std::string hybrid_quantization_scheme;
   Array<String> hybrid_layer_name;
+  bool auto_hybrid_quantization;
+  std::string quantization_loss_algorithm;
+  double quantization_loss_threshold;
+  bool dump_quantization_loss;
   int nbit_input;
   int nbit_weight;
   int nbit_activation;
@@ -145,6 +124,8 @@ struct CSINNConfigNode : public tvm::AttrsNode<CSINNConfigNode> {
   std::string weight_quantized_type;
   std::string layout;
   double channel_quantization_ratio_threshold;
+  std::string structed_sparsity;
+  int kernel_parallel;
 
   bool fuse_clip;
   bool fuse_relu;
@@ -171,11 +152,15 @@ struct CSINNConfigNode : public tvm::AttrsNode<CSINNConfigNode> {
   int h_max_out_channel;
   int h_max_kernel_size;
   bool h_contain_weight;
+  int h_align;
+
+  int model_priority;
 
   TVM_DECLARE_ATTRS(CSINNConfigNode, "ext.attrs.CSINNConfigNode") {
     TVM_ATTR_FIELD(sid).set_default("csinn");
     TVM_ATTR_FIELD(target).set_default("ref");
     TVM_ATTR_FIELD(params_path).set_default("./");
+    TVM_ATTR_FIELD(graph_info_path).set_default("./");
     TVM_ATTR_FIELD(debug_level).set_default("WARNING");
     TVM_ATTR_FIELD(run_mode).set_default("graph");
     TVM_ATTR_FIELD(model_save).set_default("run_only");
@@ -219,7 +204,15 @@ struct CSINNConfigNode : public tvm::AttrsNode<CSINNConfigNode> {
     TVM_ATTR_FIELD(h_max_groups).set_default(0);
     TVM_ATTR_FIELD(h_max_out_channel).set_default(0);
     TVM_ATTR_FIELD(h_max_kernel_size).set_default(0);
+    TVM_ATTR_FIELD(h_align).set_default(1);
     TVM_ATTR_FIELD(h_contain_weight).set_default(false);
+    TVM_ATTR_FIELD(model_priority).set_default(0);
+    TVM_ATTR_FIELD(auto_hybrid_quantization).set_default(false);
+    TVM_ATTR_FIELD(quantization_loss_algorithm).set_default("cos");
+    TVM_ATTR_FIELD(quantization_loss_threshold).set_default(0.0);
+    TVM_ATTR_FIELD(dump_quantization_loss).set_default(false);
+    TVM_ATTR_FIELD(structed_sparsity).set_default("unset");
+    TVM_ATTR_FIELD(kernel_parallel).set_default(0);
   }
 };
 
@@ -251,27 +244,28 @@ class CodegenCSINN : public ExprVisitor, public CodegenCBase {
     this->layout_ = opt_cfg->layout;
     this->target_ = opt_cfg->target;
     this->params_path_ = opt_cfg->params_path;
+    this->graph_info_path_ = opt_cfg->graph_info_path;
 
     this->output_dir_ = dirnameOf(this->params_path_);
 
     this->debug_level_ = opt_cfg->debug_level;
     this->multithread = opt_cfg->multi_thread;
     this->model_save = opt_cfg->model_save;
+    this->model_priority = opt_cfg->model_priority;
     this->trace_strategy_ = opt_cfg->trace_strategy;
     this->input_memory_type = __convert_list(opt_cfg->input_memory_type);
     this->output_memory_type = __convert_list(opt_cfg->output_memory_type);
 
     this->hybrid_quantization_scheme = opt_cfg->hybrid_quantization_scheme;
     this->hybrid_layer_name = __convert_string_list(opt_cfg->hybrid_layer_name);
+    this->auto_hybrid_quantization = opt_cfg->auto_hybrid_quantization;
 
-    if (this->target_ == "light") {
+    if (this->target_ == "light" && !auto_hybrid_quantization) {
       target_name_ = "CSINN_LIGHT";
     } else if (this->target_ == "light_new") {
       target_name_ = "CSINN_LIGHT";
     } else if (this->target_ == "anole") {
       target_name_ = "CSINN_ANOLE";
-    } else if (this->target_ == "ch8601") {
-      target_name_ = "CSINN_CH8601";
     } else if (this->target_ == "dp1k") {
       target_name_ = "CSINN_DP1K";
     } else if (this->target_ == "c906") {
@@ -280,7 +274,7 @@ class CodegenCSINN : public ExprVisitor, public CodegenCBase {
       target_name_ = "CSINN_C908";
     } else if (this->target_ == "i805") {
       target_name_ = "CSINN_I805";
-    } else if (target_ == "hlight") {
+    } else if (target_ == "hlight" || (target_ == "light" && auto_hybrid_quantization)) {
       target_name_ = "CSINN_REF";
     } else if (target_ == "asp") {
       target_name_ = "CSINN_REF";
@@ -394,6 +388,11 @@ class CodegenCSINN : public ExprVisitor, public CodegenCBase {
 
     hybrid_cfg = new QConfig_();
     __update_hybrid_quantization(hybrid_cfg, hybrid_quantization_scheme);
+    if (target_ == "light" && hybrid_quantization_scheme == "int16_sym") {
+      hybrid_cfg->dtype_activation = "float";
+      hybrid_cfg->dtype_input = "float";
+      hybrid_cfg->dtype_weight = "float";
+    }
   }
 
   virtual ~CodegenCSINN() {}
@@ -407,30 +406,37 @@ class CodegenCSINN : public ExprVisitor, public CodegenCBase {
 
   virtual string EmitGraph(void);
 
-  virtual void SetDim(string name, std::vector<int> shape);
-  virtual void CreateConstantTensorBase(string name, size_t size, std::vector<int> shape,
-                                        string target_dtype, string layout);
+  virtual void SetConstDim(string name, std::vector<int> shape);
+  virtual void SetDim(CSINNTensor* t, string name, std::vector<int> shape);
+  virtual CSINNConstantTensor* CreateConstantTensorBase(string name, size_t size,
+                                                        std::vector<int> shape, string target_dtype,
+                                                        int32_t layout);
   // for common constant
-  virtual void CreateConstantTensor(CSIConstant* data, string name, std::vector<int> shape,
-                                    string target_dtype, QuantParams quant_params,
-                                    bool depthwise_kernel = false, bool is_bias = false);
-  virtual void CreateHybridConstantTensor(CSIConstant* data, string name, std::vector<int> shape,
-                                          Array<Array<IndexExpr>> q_params, int params_index,
-                                          bool is_layer_hybrid, bool depthwise_kernel = false);
+  virtual void CreateConstantTensor(CSINNOP* op, CSIConstant* data, string name,
+                                    std::vector<int> shape, string target_dtype,
+                                    QuantParams quant_params, bool depthwise_kernel = false,
+                                    bool is_bias = false);
+  virtual void CreateHybridConstantTensor(CSINNOP* op, CSIConstant* data, string name,
+                                          std::vector<int> shape, Array<Array<IndexExpr>> q_params,
+                                          int params_index, bool is_layer_hybrid,
+                                          string const_kind = "");
   // for bias
-  virtual void CreateConstantTensor(CSIConstant* data, string name, std::vector<int> shape,
-                                    string target_dtype, QuantParams input_quant_params,
-                                    QuantParams kernel_quant_params, QuantParams bias_quant_params);
+  virtual void CreateConstantTensor(CSINNOP* op, CSIConstant* data, string name,
+                                    std::vector<int> shape, string target_dtype,
+                                    QuantParams input_quant_params, QuantParams kernel_quant_params,
+                                    QuantParams bias_quant_params);
   // virtual void CreateHybridConstantTensor(CSIConstant* data, string name, std::vector<int> shape,
   //                                   Array<Array<IndexExpr>> q_params);
 
-  virtual void CreateBiasTensor(const CallNode* call, CSIConstant* data, string name,
+  virtual void CreateBiasTensor(CSINNOP* op, const CallNode* call, CSIConstant* data, string name,
                                 Array<Array<IndexExpr>> q_params, bool* fuse_zp,
                                 bool is_layer_hybrid, bool is_input_hybrid, bool is_wei_hybrid,
-                                bool depthwise_kernel = false);
+                                string const_kind = "");
 
-  virtual void CreateTensor(string name, string data, std::vector<int> shape,
-                            QuantParams quant_params, string dtype);
+  // virtual void CreateTensor(string name, string data, std::vector<int> shape,
+  //                           QuantParams quant_params, string dtype);
+  virtual CSINNVarTensor* CreateTensor(string name, string data, std::vector<int> shape,
+                                       QuantParams quant_params, string dtype);
   virtual void CreateMallocBuf(string name, std::vector<int> shape, string dtype) = 0;
   virtual void CreateTensorSessData() = 0;
   virtual void CreateHybridTensorSessData(std::vector<int> shape, string dtype) = 0;
@@ -440,40 +446,42 @@ class CodegenCSINN : public ExprVisitor, public CodegenCBase {
   virtual Output GetRealInput(const VarNode* var);
   virtual void PushInput(string name, const CallNode* call);
 
-  virtual string InputTensor(std::ostringstream& decl, const CallNode* call, int input_index,
-                             QuantParams quant_params, string dtype);
-  virtual string HybridInputTensor(std::ostringstream& decl, const CallNode* call, int input_index,
-                                   Array<Array<IndexExpr>> q_params, int params_index,
-                                   bool is_layer_hybrid);
-  virtual string InputTensorName(const CallNode* call, int input_index, QuantParams quant_params,
-                                 string dtype);
-  virtual string InputTensorVar(const VarNode* call, int input_index, QuantParams quant_params,
-                                string dtype);
-  virtual string InputTensorCall(const CallNode* call, int input_index, QuantParams quant_params,
-                                 string dtype);
+  virtual string InputTensor(CSINNOP* op, std::ostringstream& decl, const CallNode* call,
+                             int input_index, QuantParams quant_params, string dtype);
+  virtual string HybridInputTensor(CSINNOP* op, std::ostringstream& decl, const CallNode* call,
+                                   int input_index, Array<Array<IndexExpr>> q_params,
+                                   int params_index, bool is_layer_hybrid);
+  virtual string InputTensorName(CSINNOP* op, const CallNode* call, int input_index,
+                                 QuantParams quant_params, string dtype);
+  virtual string InputTensorVar(CSINNOP* op, const VarNode* call, int input_index,
+                                QuantParams quant_params, string dtype);
+  virtual string InputTensorCall(CSINNOP* op, const CallNode* call, int input_index,
+                                 QuantParams quant_params, string dtype);
   virtual string InputTensorTupleItem(const TupleGetItemNode* call, QuantParams quant_params,
                                       string dtype);
 
-  virtual string InsertDataConvert(const CallNode* call, int input_index, string input_name,
-                                   QuantParams quant_params, string dtype);
+  virtual string InsertDataConvert(CSINNOP* op, const CallNode* call, int input_index,
+                                   string input_name, QuantParams quant_params, string dtype);
 
   virtual void DumpConstant();
+  virtual void DumpGraphInfo();
   virtual void SessionRunMode() {}
   virtual void ModelBinarySave() {}
   virtual void malloc_buf(string out, int out_size) = 0;
   virtual bool InOpList(const CallNode* call);
-  virtual string OutputTensor(std::ostringstream& decl, const CallNode* call,
+  virtual string OutputTensor(CSINNOP* op, std::ostringstream& decl, const CallNode* call,
                               QuantParams quant_params, string dtype);
-  virtual string HybridOutputTensor(std::ostringstream& decl, const CallNode* call,
+  virtual string HybridOutputTensor(CSINNOP* op, std::ostringstream& decl, const CallNode* call,
                                     Array<Array<IndexExpr>> q_params, int params_index,
                                     bool is_layer_hybrid);
-  virtual string DataConvertTensor(std::vector<int> shape, QuantParams quant_params, string dtype);
+  virtual string DataConvertTensor(CSINNOP* op, std::vector<int> shape, QuantParams quant_params,
+                                   string dtype);
 
   virtual void PushOutput(string name, const CallNode* call, string dtype = "");
   virtual void PushOutput(std::vector<string> names, const CallNode* call);
   virtual int CheckOutput(const CallNode* call);
   template <typename T>
-  void SisoOp(std::ostringstream& decl_stream, const CallNode* call, const T* attr,
+  void SisoOp(CSINNOP* op, std::ostringstream& decl_stream, const CallNode* call, const T* attr,
               string op_name = "");
   virtual QuantParams* GetQuantParamsBase(float min_value, float max_value, int32_t tensor_type,
                                           QConfig_* quantize_cfg = NULL);
@@ -481,13 +489,14 @@ class CodegenCSINN : public ExprVisitor, public CodegenCBase {
   virtual QuantParams* GetQuantParamsBase(float scale, int32_t zp, float min_value,
                                           float max_value);
   virtual QuantParams* GetQuantParams(Array<Array<IndexExpr>> q_params,
-                                      QConfig_* quantize_cfg = NULL);
+                                      QConfig_* quantize_cfg = NULL, string const_kind = "");
 
   virtual void GetAsymScale(float min_value, float max_value, int bits, Qinfo* qinfo);
   virtual void GetSymScale(float min_value, float max_value, int valid_range, Qinfo* qinfo);
 
-  virtual QuantParams* GetIntegralQuantParams(QuantParams* q_params, int32_t tensor_type,
-                                              QConfig_* quantize_cfg = NULL);
+  virtual QuantParams* GetIntegralQuantParams(QuantParams* q_params, int32_t tensor_type);
+
+  virtual bool IsIntegralOrNot(string const_kind);
 
   virtual string replace(string a);
 
@@ -554,13 +563,13 @@ class CodegenCSINN : public ExprVisitor, public CodegenCBase {
                                    string params_name, string layer_name, string layout);
   virtual void params_hybrid_setup(std::ostringstream& decl, string op_name, std::vector<int> shape,
                                    string params_name, string layer_name, string dtype,
-                                   string layout = "CSINN_LAYOUT_NCHW");
+                                   CSINNTensor* tensor, string layout = "CSINN_LAYOUT_NCHW");
 
   virtual std::shared_ptr<std::vector<float>> FuseZpToBias(const CallNode* call,
                                                            QuantParams* q_params,
                                                            bool is_depthwise);
 
-  virtual CSIConstant* CastParams(CSIConstant* data, string target_dtype, QuantParams quant_params,
+  virtual CSIConstant* CastParams(CSIConstant* data, string target_dtype, QuantParams* quant_params,
                                   bool depthwise_kernel);
   virtual CSIConstant* CastParams(CSIConstant* data, string target_dtype,
                                   QuantParams total_input_quant, QuantParams kernel_quant_params);
@@ -607,13 +616,15 @@ class CodegenCSINN : public ExprVisitor, public CodegenCBase {
   std::unordered_map<const Object*, size_t> layer_count;
   std::map<string, string> tensor_data;
 
+  void SetExtFuncId(string func_id) { this->ext_func_id_ = func_id; }
+
+  Map<String, Array<Array<Array<IndexExpr>>>> ret_quant_info() { return quant_info; }
+
  protected:
   string siso_input_name;
   std::vector<Output> output_list_;
   bool first_visit_expr{true};
   std::vector<const tvm::relay::CallNode*> real_out;
-  /*! \brief statement of the function that will be compiled using CSINN kernels. */
-  std::vector<string> ext_func_body;
   /*! \brief The arguments used by a wrapped function that calls CSINN kernels. */
   Array<Var> ext_func_args_;
 
@@ -622,8 +633,6 @@ class CodegenCSINN : public ExprVisitor, public CodegenCBase {
   string target_name_{""};
   std::vector<string> target_op_list;
 
-  /*! \brief The declaration of intermeidate buffers. */
-  std::vector<string> buf_decl_;
   std::map<string, QuantParams> io_nodes;
   QConfig_* cfg;
   QConfig_* hybrid_cfg;
@@ -638,6 +647,7 @@ class CodegenCSINN : public ExprVisitor, public CodegenCBase {
 
   bool multithread{false};
   string model_save{""};
+  int model_priority;
   string trace_strategy_{"normal"};
 
   std::vector<int> input_memory_type;
@@ -646,7 +656,28 @@ class CodegenCSINN : public ExprVisitor, public CodegenCBase {
   /*! \brief Hybird quantization buffers. */
   string hybrid_quantization_scheme{"unset"};
   std::vector<string> hybrid_layer_name;
+  bool auto_hybrid_quantization{false};
   std::map<string, string> output2params;
+
+  /*
+  key:    String: layer_name
+  value:  Array: list of multiple quant info
+            Array: list of mulple channel values
+              Array: list of multiple params in one of channel. include min_value, max_value,
+  zero_point, scale
+
+  Example:
+    quant_info = {"layer_name": [
+                    [
+                      [0., 10, 0.039, 0], // min_value, max_value, scale, zero_point
+                      [1., 12, 0.043, 0],
+                      ...
+                    ],
+
+                    ...
+                  ]}
+  */
+  Map<String, Array<Array<Array<IndexExpr>>>> quant_info;
 
   std::vector<string> hybrid_buffer_name_;
 
@@ -656,21 +687,13 @@ class CodegenCSINN : public ExprVisitor, public CodegenCBase {
   /*! \brief The name of the the constant. */
   std::vector<CSIConstant> constant_;
 
-  std::vector<CSIConstant> constant_list_;
-
+  /* for light_new */
   std::vector<QuantParams> qinfo_list_;
 
-  std::vector<int> flag_list_;
+  CSINNBMGraph bm_graph;
 
   /*! \brief The id of the external csinn ext_func. */
   string ext_func_id_{""};
-
-  void EnterScope() { indent_ += 2; }
-
-  void ExitScope() {
-    CHECK_GE(indent_, 2U) << "Wrong ident found.";
-    indent_ -= 2;
-  }
 
   void __update_hybrid_quantization(QConfig_* config, const string& hybrid_quantization_scheme) {
     if (hybrid_quantization_scheme == "int4_asym_w_sym") {
@@ -798,6 +821,97 @@ class CodegenCSINN : public ExprVisitor, public CodegenCBase {
     return csi_dtype;
   }
 
+  enum csinn_dtype_enum GetCSINNTensorDtype(string dtype) {
+    if (dtype == "int4_t") {
+      return CSINN_DTYPE_INT4;
+    } else if (dtype == "uint8_t" || dtype == "uint8") {
+      return CSINN_DTYPE_UINT8;
+    } else if (dtype == "int8_t" || dtype == "int8") {
+      return CSINN_DTYPE_INT8;
+    } else if (dtype == "float" || dtype == "float32") {
+      return CSINN_DTYPE_FLOAT32;
+    } else if (dtype == "float16") {
+      return CSINN_DTYPE_FLOAT16;
+    } else if (dtype == "bfloat16") {
+      return CSINN_DTYPE_BFLOAT16;
+    } else if (dtype == "int32_t" || dtype == "int32") {
+      return CSINN_DTYPE_INT32;
+    } else if (dtype == "bool") {
+      return CSINN_DTYPE_BOOL;
+    } else if (dtype == "int16_t" || dtype == "int16") {
+      return CSINN_DTYPE_INT16;
+    } else {
+      LOG(FATAL) << "Unsupported dtype " << dtype;
+    }
+    return CSINN_DTYPE_INT8;
+  }
+
+  int32_t GetCSINNTensorActLayout(std::vector<int> shape) {
+    if (shape.size() == 1 || shape.size() == 0) {
+      return CSINN_LAYOUT_N;
+    } else if (shape.size() == 2) {
+      return CSINN_LAYOUT_NC;
+    } else if (shape.size() == 3) {
+      if (layout_ == "NCHW") {
+        return CSINN_LAYOUT_NCW;
+      }
+      if (layout_ == "NHWC") {
+        return CSINN_LAYOUT_NWC;
+      }
+    } else if (shape.size() == 4) {
+      if (layout_ == "NCHW") {
+        return CSINN_LAYOUT_NCHW;
+      }
+      if (layout_ == "NHWC") {
+        return CSINN_LAYOUT_NHWC;
+      }
+    } else if (shape.size() == 5) {
+      if (layout_ == "NCHW") {
+        return CSINN_LAYOUT_NCDHW;
+      }
+      if (layout_ == "NHWC") {
+        return CSINN_LAYOUT_NDHWC;
+      }
+    } else {
+      LOG(FATAL) << "Unsupported shape size " << shape.size();
+    }
+    return CSINN_LAYOUT_NULL;
+  }
+
+  int32_t GetCSINNTensorWeightLayout(std::vector<int> shape) {
+    if (shape.size() == 0) {
+      return CSINN_LAYOUT_NULL;
+    } else if (shape.size() == 1) {
+      return CSINN_LAYOUT_O;
+    } else if (shape.size() == 2) {
+      return CSINN_LAYOUT_OI;
+    } else if (shape.size() == 3) {
+      if (layout_ == "NCHW") {
+        return CSINN_LAYOUT_OIW;
+      }
+      if (layout_ == "NHWC") {
+        return CSINN_LAYOUT_OWI;
+      }
+    } else if (shape.size() == 4) {
+      if (layout_ == "NCHW") {
+        return CSINN_LAYOUT_OIHW;
+      }
+      if (layout_ == "NHWC") {
+        return CSINN_LAYOUT_OHWI;
+      }
+    } else if (shape.size() == 5) {
+      if (layout_ == "NCHW") {
+        return CSINN_LAYOUT_OIDHW;
+      }
+      if (layout_ == "NHWC") {
+        return CSINN_LAYOUT_ODHWI;
+      }
+    } else {
+      LOG(FATAL) << "Unsupported shape size " << shape.size();
+    }
+    return CSINN_LAYOUT_NULL;
+  }
+
   string GetCSINNActLayout(std::vector<int> shape) {
     string csi_layout;
     if (shape.size() == 1 || shape.size() == 0) {
@@ -856,10 +970,78 @@ class CodegenCSINN : public ExprVisitor, public CodegenCBase {
     return mtype;
   }
 
-  void PrintIndents(std::ostringstream& stream) {
-    for (int i = 0; i < indent_; i++) {
-      stream << ' ';
+  enum csinn_dtype_enum CSINNTensorSchemeToDtype(string str) {
+    if (str == "CSINN_QUANT_INT4_ASYM_W_SYM") {
+      return CSINN_DTYPE_INT4;
+    } else if (str == "CSINN_QUANT_UINT8_ASYM") {
+      return CSINN_DTYPE_UINT8;
+    } else if (str == "CSINN_QUANT_INT8_SYM") {
+      return CSINN_DTYPE_INT8;
+    } else if (str == "CSINN_QUANT_INT8_ASYM" || str == "CSINN_QUANT_INT8_ORIGINAL" ||
+               str == "CSINN_QUANT_INT8_ASYM_W_SYM") {
+      return CSINN_DTYPE_INT8;
+    } else if (str == "CSINN_QUANT_INT16_SYM") {
+      return CSINN_DTYPE_INT16;
+    } else if (str == "CSINN_QUANT_FLOAT16") {
+      return CSINN_DTYPE_FLOAT16;
+    } else if (str == "CSINN_QUANT_BFLOAT16") {
+      return CSINN_DTYPE_BFLOAT16;
+    } else {
+      LOG(WARNING) << "Unsupport quantization scheme " << str;
     }
+    return CSINN_DTYPE_SIZE;
+  }
+
+  enum csinn_dtype_enum CSINNTensorDtypeStringToEnum(string dtype) {
+    if (dtype == "CSINN_DTYPE_INT4") {
+      return CSINN_DTYPE_INT4;
+    } else if (dtype == "CSINN_DTYPE_UINT8") {
+      return CSINN_DTYPE_UINT8;
+    } else if (dtype == "CSINN_DTYPE_INT8") {
+      return CSINN_DTYPE_INT8;
+    } else if (dtype == "CSINN_DTYPE_FLOAT32") {
+      return CSINN_DTYPE_FLOAT32;
+    } else if (dtype == "CSINN_DTYPE_FLOAT16") {
+      return CSINN_DTYPE_FLOAT16;
+    } else if (dtype == "CSINN_DTYPE_BFLOAT16") {
+      return CSINN_DTYPE_BFLOAT16;
+    } else if (dtype == "CSINN_DTYPE_INT32") {
+      return CSINN_DTYPE_INT32;
+    } else if (dtype == "CSINN_DTYPE_BOOL") {
+      return CSINN_DTYPE_BOOL;
+    } else if (dtype == "CSINN_DTYPE_INT16") {
+      return CSINN_DTYPE_INT16;
+    } else {
+      LOG(FATAL) << "Unsupported dtype " << dtype;
+    }
+    return CSINN_DTYPE_SIZE;
+  }
+
+  enum csinn_quant_enum CSINNTensorQuantStringToEnum(string str) {
+    if (str == "CSINN_QUANT_UNSET") {
+      return CSINN_QUANT_UNSET;
+    } else if (str == "CSINN_QUANT_INT4_SYM") {
+      return CSINN_QUANT_INT4_SYM;
+    } else if (str == "CSINN_QUANT_UINT8_ASYM") {
+      return CSINN_QUANT_UINT8_ASYM;
+    } else if (str == "CSINN_QUANT_UINT8_SYM") {
+      return CSINN_QUANT_UINT8_SYM;
+    } else if (str == "CSINN_QUANT_INT8_ASYM") {
+      return CSINN_QUANT_INT8_ASYM;
+    } else if (str == "CSINN_QUANT_INT8_SYM") {
+      return CSINN_QUANT_INT8_SYM;
+    } else if (str == "CSINN_QUANT_INT16_SYM") {
+      return CSINN_QUANT_INT16_SYM;
+    } else if (str == "CSINN_QUANT_FLOAT16") {
+      return CSINN_QUANT_FLOAT16;
+    } else if (str == "CSINN_QUANT_BFLOAT16") {
+      return CSINN_QUANT_BFLOAT16;
+    } else if (str == "CSINN_QUANT_FLOAT32") {
+      return CSINN_QUANT_FLOAT32;
+    } else {
+      LOG(FATAL) << "Unsupported quant " << str;
+    }
+    return CSINN_QUANT_UNSET;
   }
 
   float* GetFloatData(CSIConstant* data) {
@@ -896,30 +1078,20 @@ class CodegenCSINN : public ExprVisitor, public CodegenCBase {
     return out;
   }
 
-  void PrintOneLine(std::ostringstream& stream, string str) {
-    PrintIndents(stream);
-    stream << str << "\n";
-  }
-
-  void PrintOneLine(std::ostringstream& stream, std::ostringstream& str) {
-    PrintOneLine(stream, str.str());
-    str.str("");
-  }
-
-  void PrintNewLine(std::ostringstream& stream) { stream << "\n"; }
-
-  void PushDeclLine(std::ostringstream& decl) {
-    decl << ";";
-    buf_decl_.push_back(decl.str());
-    decl.str("");
-  }
-
   void end_stream(std::ostringstream& decl, string name) {
     std::ostringstream func;
-    func << "csi_" << name << decl.str() << ";";
+    func << "csinn_" << name << decl.str();
 
-    ext_func_body.push_back(func.str());
+    func_def_.PushCall(func);
     buf_idx_++;
+  }
+
+  void push_decl(CSINNOP* op) {
+    op->set_bm_base(bm_graph.size());
+    std::vector<string> ret = op->serialize();
+    func_def_.PushDecl(ret);
+    bm_graph.push_op(op);
+    // delete op;
   }
 
   /*
@@ -1090,25 +1262,60 @@ class CodegenCSINN : public ExprVisitor, public CodegenCBase {
     return false;
   }
 
+  template <typename T>
+  bool is_contain_item(std::initializer_list<T> arr, T target_item) {
+    for (auto item : arr) {
+      if (item == target_item) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   string get_complete_layer_name(string op_name, string ori_layer_name) {
-    string res = op_name + "_" + ori_layer_name + "_" + std::to_string(params_idx_);
-    return res;
+    // string res = op_name + "_" + ori_layer_name + "_" + std::to_string(params_idx_);
+    return ori_layer_name;
+  }
+
+  void collect_quant_info(string layer_name, Array<Array<IndexExpr>> q_params, int index) {
+    QuantParams* params = GetQuantParams(get_quant_params_expr(q_params, index), cfg);
+
+    Array<Array<IndexExpr>> curr_info;
+    for (int i = 0; i < params[0].q_size; i++) {
+      struct Qinfo curr_q = params[0].qinfo[i];
+
+      Array<IndexExpr> tmp;
+      tmp.push_back(FloatImm(DataType::Float(32), curr_q.min));
+      tmp.push_back(FloatImm(DataType::Float(32), curr_q.max));
+      tmp.push_back(FloatImm(DataType::Float(32), curr_q.scale));
+      tmp.push_back(FloatImm(DataType::Float(32), curr_q.zero_point));
+
+      curr_info.push_back(tmp);
+    }
+
+    Array<Array<Array<IndexExpr>>> value;
+    if (quant_info.find(layer_name) == quant_info.end()) {
+      value = Array<Array<Array<IndexExpr>>>();
+    } else {
+      value = quant_info.Get(layer_name).value();
+    }
+    value.push_back(curr_info);
+
+    quant_info.Set(layer_name, value);
   }
 
  private:
-  string target_{""};
-
   int const_idx_{0};
 
   std::vector<Output> out_list_;
 
-  string params_path_;
-
-  int indent_{0};
-
  protected:
+  string target_{""};
+  string params_path_;
+  string graph_info_path_;
   size_t constant_offset{0};
   size_t qinfo_offset{0};
+  CSINNCodeFormat func_def_;
 };
 
 }  // namespace contrib

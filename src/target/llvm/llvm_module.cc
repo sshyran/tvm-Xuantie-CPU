@@ -472,6 +472,8 @@ TVM_REGISTER_GLOBAL("codegen.LLVMModuleCreate")
       auto triple = tm->getTargetTriple();
       module->setTargetTriple(triple.str());
       module->setDataLayout(tm->createDataLayout());
+      module->addModuleFlag(llvm::Module::Warning, "tvm_target",
+                            llvm::MDString::get(*ctx, LLVMTargetToString(target)));
       n->Init(std::move(module), ctx);
       return runtime::Module(n);
     });

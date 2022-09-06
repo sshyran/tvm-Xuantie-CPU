@@ -30,8 +30,6 @@
 
 #include "ir_utils.h"
 
-// #define THEAD_DEBUG
-
 namespace tvm {
 namespace tir {
 
@@ -42,13 +40,11 @@ void BinderAddAssert(arith::Analyzer* ana, PrimExpr cond, const std::string& arg
     LOG(FATAL) << "Bind have an unmet assertion: " << cond << ", "
                << " on argument " << arg_name;
   }
-#ifdef THEAD_DEBUG
   if (!is_one(scond)) {
     std::ostringstream os;
     os << "Argument " << arg_name << " has an unsatisfied constraint: " << cond;
     asserts->emplace_back(AssertStmt(scond, tvm::tir::StringImm(os.str()), Evaluate(0)));
   }
-#endif
 }
 
 bool ArgBinder::Bind_(const PrimExpr& arg, const PrimExpr& value, const std::string& arg_name,
@@ -221,7 +217,6 @@ void ArgBinder::BindDLTensor(const Buffer& buffer, const PrimExpr& device_type,
       conds.push_back(expect_stride == svalue);
       expect_stride = expect_stride * buffer->shape[k];
     }
-#ifdef THEAD_DEBUG
     std::ostringstream stride_err_msg;
     stride_err_msg << arg_name << ".strides:"
                    << " expected to be compact array";
@@ -234,7 +229,6 @@ void ArgBinder::BindDLTensor(const Buffer& buffer, const PrimExpr& device_type,
       check = IfThenElse(Not(v_strides_is_null), check, Stmt());
       asserts_.emplace_back(SeqStmt({check, Evaluate(0)}));
     }
-#endif
   } else if (buffer->buffer_type == kAutoBroadcast) {
     DataType stype = buffer->DefaultIndexType();
     PrimExpr stride = make_const(stype, 1);

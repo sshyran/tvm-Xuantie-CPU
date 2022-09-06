@@ -19,14 +19,13 @@
 
 /* auto generate by HHB_VERSION "1.13.x" */
 
-#include <csi_#TARGET#.h>
+#include <shl_#TARGET#.h>
 
-void csi_nn_#TARGET#_bc_init_reg()
+void shl_target_init_#TARGET#()
 {
-#INIT_REG#
-}
-
-void csi_nn_#TARGET#_bc_reg()
-{
-#BC_REG#
+    shl_register_runtime_callback(#TARGET_API#, NULL);
+    shl_register_op_callback(#TARGET_API#, shl_cb_map_#TARGET#);
+#REG_OP#
+    shl_register_runtime_callback(#TARGET_API#, shl_gref_runtime_callback);
+#REG_OP_EST#
 }

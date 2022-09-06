@@ -38,22 +38,47 @@ class CodegenASP : public CodegenCSINN {
   CodegenASP() : CodegenCSINN() {
     base_dtype_ = "CSINN_DTYPE_INT8";
     target_op_list = {"qnn.csi.conv2d", "qnn.csi.dense", "qnn.csi.avgpool2d", "qnn.csi.maxpool2d"};
+    auto ctx = transform::PassContext::Current();
+    auto opt = ctx->GetConfig<CSINNConfig>("relay.ext.csinn.options");
+    if (!opt.defined()) {
+      opt = AttrsWithDefaultValues<CSINNConfig>();
+    }
+    auto opt_cfg = opt.value();
+    structed_sparsity = opt_cfg->structed_sparsity;
+    kernel_parallel = opt_cfg->kernel_parallel;
+    if (kernel_parallel != 0 && kernel_parallel != 1 && kernel_parallel != 16 &&
+        kernel_parallel != 32) {
+      LOG(ERROR) << "Error parallel for ASP: " << kernel_parallel;
+    }
   }
   virtual ~CodegenASP() {}
 
-  virtual void CreateTensor(string name, string data, std::vector<int> shape,
-                            QuantParams quant_params, string dtype);
+  virtual CSINNVarTensor* CreateTensor(string name, string data, std::vector<int> shape,
+                                       QuantParams quant_params, string dtype);
   virtual void params_common_setup(std::ostringstream& decl, const CallNode* call, string op_name,
                                    string params_name, string layer_name, string layout);
-
+  virtual CSIConstant* CastParams(CSIConstant* data, string target_dtype, QuantParams* quant_params,
+                                  bool depthwise_kernel);
+  void create_sparse_mask(CSIConstant* data, QuantParams quant_params, int size);
+  void setup_sparse_index(CSIConstant* data);
+  void merge_sparse_kernel(CSIConstant* data);
+  void depth_fill(CSIConstant* cst, std::vector<int>* shape);
+  void convert_constant(CSIConstant* cst, const std::vector<int>& shape);
   void malloc_buf(string out, int out_size) {}
   void CreateMallocBuf(string name, std::vector<int> shape, string dtype) {}
   void CreateTensorSessData() {}
   void CreateHybridTensorSessData(std::vector<int> shape, string dtype) {}
   void FreeTensor(const Expr& expr, string name) {}
   void EmitSessionSetup();
-  void ModelBinarySave();
-  void SessionRunMode() { PrintOneLine(code_stream_, "sess->base_run_mode = CSINN_RM_CPU_GRAPH;"); }
+  void GetAsymScale(float min_value, float max_value, int bits, Qinfo* qinfo);
+  void ModelBinarySave() {}
+  string EmitGraph(void);
+  void CreateBiasTensor(CSINNOP* op, const CallNode* call, CSIConstant* data, string name,
+                        Array<Array<IndexExpr>> q_params, bool* fuse_zp, bool is_layer_hybrid,
+                        bool is_input_hybrid, bool is_weight_hybrid, string const_kind);
+  void SessionRunMode() { func_def_.OneLine("sess->base_run_mode = CSINN_RM_CPU_GRAPH;"); }
+  std::string structed_sparsity;
+  int kernel_parallel;
 };
 
 }  // namespace contrib

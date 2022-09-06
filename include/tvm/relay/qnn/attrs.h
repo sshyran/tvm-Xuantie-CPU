@@ -26,6 +26,7 @@
 
 #include <tvm/ir/attrs.h>
 
+#include <map>
 #include <string>
 
 namespace tvm {
@@ -2094,6 +2095,18 @@ struct QnnCSILayerNormAttrs : public tvm::AttrsNode<QnnCSILayerNormAttrs> {
     TVM_ATTR_FIELD(layer_name).describe("The name of this layer");
   }
 };  // struct QnnCSILayerNormAttrs
+
+/*! \brief Attributes used in custom operator 0 */
+struct QnnCSICustomAttrs : public tvm::AttrsNode<QnnCSICustomAttrs> {
+  String layer_name;
+  String op_type;
+  std::map<String, String> custom_attr;
+
+  TVM_DECLARE_ATTRS(QnnCSICustomAttrs, "relay.attrs.QnnCSICustomAttrs") {
+    TVM_ATTR_FIELD(op_type).set_default("NONE").describe("The type of custom op.");
+    TVM_ATTR_FIELD(layer_name).describe("The name of this layer");
+  }
+};  // struct QnnCSICustomAttrs
 
 }  // namespace qnn
 }  // namespace relay

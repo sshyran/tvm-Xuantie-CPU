@@ -29,7 +29,6 @@ import numpy as np
 import tvm
 from tvm import runtime
 from tvm.contrib import graph_runtime
-from tvm.contrib import hhb_runtime
 
 from core.arguments_manage import (
     add_simulate_argument,

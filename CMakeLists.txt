@@ -260,15 +260,11 @@ file(GLOB_RECURSE COMPILER_SRCS
     src/support/*.cc
     )
 
-if(USE_PNNA)
-  file(GLOB_RECURSE PNNA_COMPILER_SRCS
-      thead/pnna/common/cnn_common/*.cpp
-      thead/pnna/offline/mapping_tool/*.cpp
-      thead/pnna/dependencies/external/jsoncpp/*.cpp
-      thead/pnna/dependencies/internal/hwconf_encode/*.cpp
+file(GLOB_RECURSE HHB_COMPILER_SRCS
+      thead/src/optimizer/*.cc
+      thead/src/light/*.cc
       )
-  list(APPEND COMPILER_SRCS ${PNNA_COMPILER_SRCS})
-endif()
+  list(APPEND COMPILER_SRCS ${HHB_COMPILER_SRCS})
 
 file(GLOB CODEGEN_SRCS
   src/target/*.cc
@@ -309,6 +305,19 @@ file(GLOB RUNTIME_SRCS
   src/runtime/*.cc
   src/runtime/vm/*.cc
 )
+
+
+if(USE_PNNA)
+  file(GLOB_RECURSE PNNA_COMPILER_SRCS
+      thead/pnna/common/cnn_common/*.cpp
+      thead/pnna/offline/mapping_tool/*.cpp
+      thead/pnna/dependencies/external/jsoncpp/*.cpp
+      thead/pnna/dependencies/internal/hwconf_encode/*.cpp
+      )
+  list(APPEND COMPILER_SRCS ${PNNA_COMPILER_SRCS})
+else()
+  list(REMOVE_ITEM COMPILER_SRCS ${tvm_SOURCE_DIR}/src/relay/analysis/imgdnn_profiler.cc)
+endif()
 
 if(BUILD_FOR_HEXAGON)
   # Add file implementing posix_memalign when building the runtime as
@@ -610,6 +619,14 @@ if(USE_PNNA)
     )
   target_compile_definitions(tvm_objs PRIVATE -DBUILD_PNNA)
 endif()
+
+target_include_directorieS(
+    tvm_objs
+    PUBLIC "thead/src/optimizer"
+    PUBLIC "thead/src/light"
+)
+
+
 
 target_include_directorieS(
   tvm_libinfo_objs

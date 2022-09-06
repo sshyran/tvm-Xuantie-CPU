@@ -56,6 +56,7 @@ from .common import (
     shape_of,
     try_resolve_var_to_const,
     unbind,
+    set_span,
 )
 
 __all__ = ["from_onnx"]
@@ -3746,10 +3747,10 @@ class QLinearMatMul(OnnxOpConverter):
 
         # _qnn.op.dense requires the zero-point values to have dtype int32.
         a_scale_scalar = try_resolve_to_const_scalar(a_scale)
-        a_zp_scalar = try_resolve_to_const_scalar(a_zp, "int32")
+        a_zp_scalar = try_resolve_to_const_scalar(a_zp, "float32")
 
         b_scale_scalar = try_resolve_to_const_scalar(b_scale)
-        b_zp_scalar = try_resolve_to_const_scalar(b_zp, "int32")
+        b_zp_scalar = try_resolve_to_const_scalar(b_zp, "float32")
 
         # TODO: Confirm that we're using 'num_hidden_units' correctly / as intended with
         # the '_qnn.op.dense' instance below.
@@ -4757,6 +4758,9 @@ class GraphProto:
             ), "Number of output mismatch {} vs {} in {}.".format(
                 len(node_output), outputs_num, op_name
             )
+
+            span_name = i_name if i_name else op_name + "_" + "_".join(node_output)
+            op = set_span(op, span_name)
 
             if outputs_num == 1:
                 self._nodes[node_output[0]] = op

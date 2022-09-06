@@ -20,6 +20,7 @@ import logging
 from abc import ABC
 from abc import abstractmethod
 import yaml
+import shutil
 
 import tvm
 from tvm import relay
@@ -27,9 +28,9 @@ from tvm import runtime
 from tvm.relay import quantize as qtz
 from tvm.relay.backend import executor_factory
 from tvm.contrib import graph_runtime
-from tvm.contrib import hhb_runtime
 from tvm.ir.tensor_type import TensorType
 from tvm.ir.type import TupleType
+from tvm.relay.op.contrib import csinn
 
 from .common import (
     HHBException,
@@ -117,6 +118,40 @@ def check_included_filename(model_path, hhbir):
     for k in hhbir.all_included_filenames:
         if not os.path.exists(os.path.join(model_path, k)):
             raise HHBException("There is no {} in {}".format(k, model_path))
+
+
+def reorder_pixel_format(mod, params):
+    """If original model's input data pixel format is rgb, then covert it to bgr,
+    otherwise, then convert it to rgb.
+    """
+
+    class InnerVisitor(relay.ExprVisitor):
+        """Counting the number of call"""
+
+        def __init__(self):
+            super(InnerVisitor, self).__init__()
+            self.weight_name = []
+
+        def visit_call(self, call):
+            _ = [self.visit(arg) for arg in call.args]
+
+            pre_call = call.args[0]
+            if call.op.name == "nn.conv2d" and isinstance(pre_call, relay.expr.Var):
+
+                weight = call.args[1]
+                self.weight_name.append(weight.name_hint)
+
+    iv = InnerVisitor()
+    iv.visit(mod["main"])
+    to_change = iv.weight_name
+
+    for name in to_change:
+        data = params[name].asnumpy()
+        if data.shape[1] != 3:
+            continue
+        data = data[:, ::-1, :, :]
+        params[name].copyfrom(data)
+    return mod, params
 
 
 class HHBIRType(object):
@@ -302,6 +337,7 @@ class HHBQNNIR(HHBIRBase):
         from .quantization_manage import quantize_model
 
         qconfig["target"] = target
+        qconfig["params_path"] = os.path.join(qconfig["params_path"], self.params_name)
         self._curr_mod = quantize_model(input_module[0], input_module[1], qconfig, dataset, target)
 
     def save_model(self, model_path, preprocess_params=None, config_dict=None):
@@ -387,7 +423,7 @@ class HHBFloatCodegenIR(HHBIRBase):
         ):
             raise HHBException("input_module should be [IRModule, dict]")
 
-        target = get_target(board)
+        target = "llvm"
         with tvm.transform.PassContext(opt_level=opt_level):
             logger.info("building relay graph without quantization")
             self._curr_module = relay.build(input_module[0], target=target, params=input_module[1])
@@ -445,6 +481,7 @@ class HHBX86QnnCodegenIR(HHBIRBase):
         self.params_name = "codegen_x86_quant.params"
         self.info_file = "codegen_x86_quant.yaml"
 
+        self._curr_factory = None
         self._curr_module = None
         self.info_dict = {}
 
@@ -461,29 +498,34 @@ class HHBX86QnnCodegenIR(HHBIRBase):
     def get_model(self):
         return self._curr_module
 
+    def get_factory(self):
+        return self._curr_factory
+
+    def get_lib(self, output_dir):
+        contrib_dir = os.path.dirname(os.path.realpath(os.path.expanduser(__file__)))
+        contrib_dir = os.path.realpath(os.path.join(contrib_dir, ".."))
+        source_dir = os.path.join(contrib_dir, "..", "..")
+        include_path = os.path.join(source_dir, "install_nn2", "include")
+        ref_x86_dir0 = os.path.join(source_dir, "install_nn2", "lib")  # for source
+        ref_x86_dir1 = os.path.join(contrib_dir, "install_nn2", "lib")  # for package binary
+        lib_path = os.path.join(output_dir, "quant.so")
+        kwargs = {}
+        kwargs["options"] = [
+            "-O2",
+            "-g",
+            "-I" + include_path,
+            "-L" + ref_x86_dir0,
+            "-L" + ref_x86_dir1,
+            "-lshl_ref_x86",
+        ]
+        kwargs["cc"] = "gcc"
+        lib = self.get_factory().get_lib()
+        lib.export_library(lib_path, fcompile=False, workspace_dir=output_dir, **kwargs)
+        lib = tvm.runtime.load_module(lib_path)
+        return lib
+
     def load_model(self, model_path, module=None):
-        lib = runtime.load_module(os.path.join(model_path, self.lib_name))
-        ctx = tvm.cpu(0)
-        ctx, _, device_type_id = hhb_runtime.get_device_ctx(lib, ctx)
-        fcreate = tvm._ffi.get_global_func("tvm.hhb_runtime.create")
-
-        info_path = os.path.join(model_path, self.info_file)
-
-        if not module and not os.path.exists(info_path):
-            raise HHBException("Please either provide module or info ymal...")
-
-        if module:
-            omod = module
-        else:
-            with open(info_path, "r") as f:
-                self.info_dict = yaml.safe_load(f.read())
-
-            omod = self.info_dict
-
-        mod = hhb_runtime.HHBModule(fcreate(lib, *device_type_id), omod)
-        mod.set_params(os.path.join(model_path, self.params_name))
-
-        self._curr_module = mod
+        raise HHBException("Unsupport x86 QNN model load")
 
     def set_quant_env(self, info_file):
         if not info_file:
@@ -511,7 +553,7 @@ class HHBX86QnnCodegenIR(HHBIRBase):
             raise HHBException("input_module should be [IRModule, dict or None]")
 
         target = get_target(board)
-        device_config["target"] = board
+
         params_file = os.path.join(output_path, self.params_name)
         device_config["params_path"] = params_file
 
@@ -520,15 +562,19 @@ class HHBX86QnnCodegenIR(HHBIRBase):
 
         func = mod["main"]
         func = func.with_attr("global_symbol", tvm.runtime.container.String("csinn"))
-        mod["main"] = func
+        func = func.with_attr("Compiler", "csinn")
+        mod["csinn_0"] = func
 
         logger.info("write params to %s", params_file)
 
         with tvm.transform.PassContext(
             opt_level=opt_level, config={"relay.ext.csinn.options": device_config}
         ):
-            lib, _ = relay.build_hhb(mod=mod, target=target, params=params, params_path=params_file)
+            mod = csinn.partition_for_csinn(mod, params)
+            factory = relay.build(mod, target=target, params=params)
 
+        lib = factory.get_lib()
+        self._curr_factory = factory
         self._curr_module = lib
 
         (
@@ -567,12 +613,17 @@ class HHBX86QnnCodegenIR(HHBIRBase):
             yaml.safe_dump(self.info_dict, f, default_flow_style=False)
 
 
+def fcompile(filename, files, options=None):
+    shutil.copy(files[0], filename)
+
+
 @hhb_ir_helper
 class HHBBoardQnnCodegenIR(HHBIRBase):
     def __init__(self, without_preprocess=False):
         super().__init__()
         self.mod = None
         self.params_name = "model.params"
+        self.graph_info_name = "graph_info.bin"
         self.lib_source_name = "model.c"
         self.main_source_name = "main.c"
         self.preprocess_source_name = "process.c"
@@ -583,6 +634,7 @@ class HHBBoardQnnCodegenIR(HHBIRBase):
         self.all_included_filenames.extend(
             [
                 self.params_name,
+                self.graph_info_name,
                 self.lib_source_name,
                 self.main_source_name,
                 self.preprocess_source_name,
@@ -629,30 +681,21 @@ class HHBBoardQnnCodegenIR(HHBIRBase):
         board,
         opt_level,
         output_path,
-        verbose,
         device_config,
-        multithread=False,
-        model_save="run_only",
     ):
         mod, params = input_module
         self.mod = mod
         target = get_target(board)
-        target_light_new = False
-        if board == "light" and model_save == "save_only":
-            target_light_new = True
-        device_config["target"] = board if not target_light_new else "light_new"
-        if verbose >= 3:
-            device_config["debug_level"] = "INFO"
-        if multithread:
-            device_config["multi_thread"] = True
 
-        device_config["model_save"] = model_save
         params_file = os.path.join(output_path, self.params_name)
+        graph_info_file = os.path.join(output_path, self.graph_info_name)
         device_config["params_path"] = params_file
+        device_config["graph_info_path"] = graph_info_file
 
         func = mod["main"]
         func = func.with_attr("global_symbol", tvm.runtime.container.String("csinn"))
-        mod["main"] = func
+        func = func.with_attr("Compiler", "csinn")
+        mod["csinn_0"] = func
 
         logger.info("write params to %s", params_file)
         logger.debug("Generate trace data by {} strategy".format(device_config["trace_strategy"]))
@@ -668,13 +711,14 @@ class HHBBoardQnnCodegenIR(HHBIRBase):
         with tvm.transform.PassContext(
             opt_level=opt_level, config={"relay.ext.csinn.options": device_config}
         ):
-            lib, _ = relay.build_hhb(mod=mod, target=target, params=params, params_path=params_file)
+            mod = csinn.partition_for_csinn(mod, params)
+            factory = relay.build(mod, target=target, params=params)
 
-        # if not target_light_new:
+        lib = factory.get_lib()
         self._curr_module = lib
         lib_path = os.path.join(output_path, self.lib_source_name)
         logger.info("write lib source code to %s", lib_path)
-        lib.save(lib_path)
+        factory.export_library(lib_path, fcompile=fcompile)
 
     def save_model(
         self,
@@ -691,17 +735,17 @@ class HHBBoardQnnCodegenIR(HHBIRBase):
         q_scheme=None,
         codegen_config=None,
     ):
-        from .codegen_manage import main_c_codegen, generate_func_map, generate_c906_bc_reg
+        from .codegen_manage import main_c_codegen, generate_func_map, generate_c906_cb_reg
 
         if board == "i805":
-            dump_file_path = os.path.join(output_path, "bc_map.c")
+            dump_file_path = os.path.join(output_path, "cb_map.c")
             logger.info("write bc map code to %s", dump_file_path)
             generate_func_map(self.mod, board, dump_file_path)
             return
-        elif board == "c906" and codegen_config.dynamic_bc_reg:
-            dump_file_path = os.path.join(output_path, "bc_reg.c")
+        elif board == "c906" and codegen_config.dynamic_cb_reg:
+            dump_file_path = os.path.join(output_path, "cb_reg.c")
             logger.info("write bc map code to %s", dump_file_path)
-            generate_c906_bc_reg(self.mod, board, dump_file_path, q_scheme)
+            generate_c906_cb_reg(self.mod, board, dump_file_path, q_scheme)
 
         main_c_codegen(
             self,
@@ -717,6 +761,12 @@ class HHBBoardQnnCodegenIR(HHBIRBase):
             input_memory_type,
             q_scheme,
         )
+
+        from .codegen_manage import header_section, package_sections
+
+        header_section(output_path)
+
+        package_sections(board, output_path, model_save)
 
 
 def guess_ir_type(file_path):

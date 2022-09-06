@@ -1,4 +1,4 @@
-static void print_tensor_info(struct csi_tensor *t) {
+static void print_tensor_info(struct csinn_tensor *t) {
     printf("\n=== tensor info ===\n");
     printf("shape: ");
     for (int j = 0; j < t->dim_count; j++) {

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-/* auto generate by HHB_VERSION "1.12.0" */
+/* auto generate by HHB_VERSION "2.0.4" */
 
 #ifndef HHB_IO_H_
 #define HHB_IO_H_
@@ -37,7 +37,7 @@ enum file_type { FILE_PNG, FILE_JPEG, FILE_TENSOR, FILE_TXT, FILE_BIN };
 /* Utils to process image data*/
 enum file_type get_file_type(const char* filename);
 void save_data_to_file(const char* filename, float* data, uint32_t size);
-char* get_binary_from_file(const char* filename);
+char* get_binary_from_file(const char* filename, int* size);
 char** read_string_from_file(const char* filename, int* len);
 uint32_t shape2string(uint32_t* shape, uint32_t dim_num, char* buf, uint32_t buf_sz);
 

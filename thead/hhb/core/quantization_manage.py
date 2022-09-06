@@ -16,10 +16,12 @@
 # under the License.
 """Manage quantization"""
 import logging
-from collections import namedtuple
+import os
+import json
 
 import tvm
 from tvm.relay import quantize as qtz
+from tvm.relay.quantize.auto_hybrid_quantize import HybridQuantizationInfo
 
 from .common import argument_filter_helper
 from .common import ALL_ARGUMENTS_INFO
@@ -29,48 +31,107 @@ from .common import hhb_exit
 
 
 # pylint: disable=invalid-name
+LOG = 25
 logger = logging.getLogger("HHB")
 
 
-def get_quantize_config(quantize_config: AttributeDict):
-    if not isinstance(quantize_config, AttributeDict):
-        raise HHBException("Need AttributeDidct object but get {}".format(type(quantize_config)))
-    config_dict = {
-        "nbit_input": quantize_config.num_bit_input,
-        "nbit_weight": quantize_config.num_bit_weight,
-        "nbit_activation": quantize_config.num_bit_activation,
-        "dtype_input": quantize_config.dtype_input,
-        "dtype_weight": quantize_config.dtype_weight,
-        "dtype_activation": quantize_config.dtype_activation,
-        "calibrate_mode": quantize_config.calibrate_mode,
-        "activate_quantized_type": quantize_config.activate_quantized_type,
-        "weight_quantized_type": quantize_config.weight_quantized_type,
-        "weight_scale": quantize_config.weight_scale,
-        "fuse_relu": quantize_config.fuse_relu,
-        "fuse_clip": quantize_config.fuse_clip,
-        "fuse_conv_relu": quantize_config.fuse_conv_relu,
-        "fuse_reshape_dense": quantize_config.fuse_reshape_dense,
-        "channel_quantization": quantize_config.channel_quantization,
-        "broadcast_quantization": quantize_config.broadcast_quantization,
-        "channel_quantization_ratio_threshold": quantize_config.channel_quantization_ratio_threshold,
-        "fuse_mul_before_conv": quantize_config.fuse_mul_before_conv,
-        "fuse_mul_after_conv": quantize_config.fuse_mul_after_conv,
-        "fuse_add_before_conv": quantize_config.fuse_add_before_conv,
-        "fuse_add_after_conv": quantize_config.fuse_add_after_conv,
-        "layout": quantize_config.target_layout,
-        "quantization_scheme": quantize_config.quantization_scheme,
-        "fuse_zp2bias": quantize_config.fuse_zp2bias,
-        "use_custom_fusion": quantize_config.use_custom_fusion,
-        "convert_to_relay": quantize_config.convert_to_relay,
-        "hybrid_quantization_scheme": quantize_config.hybrid_quantization_scheme,
-        "hybrid_layer_name": quantize_config.hybrid_layer_name,
-        "h_sram_size": quantize_config.h_sram_size,
-        "h_max_groups": quantize_config.h_max_groups,
-        "h_max_out_channel": quantize_config.h_max_out_channel,
-        "h_max_kernel_size": quantize_config.h_max_kernel_size,
-        "h_contain_weight": quantize_config.h_contain_weight,
-    }
+def update_hybrid_layer(config_dict, output_dir):
+    quant_file = os.path.join(output_dir, "model.quant.json")
+    if not os.path.exists(quant_file):
+        return
+    with open(quant_file, "r") as f:
+        data = json.load(f)
+    if "hybrid_layers" not in data or not data["hybrid_layers"]:
+        return
+    hqi = HybridQuantizationInfo()
+    hqi.from_dict(data["hybrid_layers"])
 
+    hybrid_layer = hqi.get_hybrid_layers()
+    if config_dict["hybrid_layer_name"]:
+        config_dict["hybrid_layer_name"] += hybrid_layer
+    else:
+        config_dict["hybrid_layer_name"] = hybrid_layer
+    if config_dict["hybrid_quantization_scheme"] == "unset":
+        config_dict["hybrid_quantization_scheme"] = "int16_sym"
+
+    if config_dict["hybrid_layer_name"]:
+        logger.log(
+            LOG,
+            "The following layers will be quantized with %s:",
+            config_dict["hybrid_quantization_scheme"],
+        )
+        logger.log(LOG, "\t{}".format(config_dict["hybrid_layer_name"]))
+    else:
+        logger.log(LOG, "There is no layer to do hybrid quantization.")
+
+
+def get_config_dict(args):
+    config_dict = {
+        "nbit_input": args.quantize_config.num_bit_input,
+        "nbit_weight": args.quantize_config.num_bit_weight,
+        "nbit_activation": args.quantize_config.num_bit_activation,
+        "dtype_input": args.quantize_config.dtype_input,
+        "dtype_weight": args.quantize_config.dtype_weight,
+        "dtype_activation": args.quantize_config.dtype_activation,
+        "calibrate_mode": args.quantize_config.calibrate_mode,
+        "activate_quantized_type": args.quantize_config.activate_quantized_type,
+        "weight_quantized_type": args.quantize_config.weight_quantized_type,
+        "weight_scale": args.quantize_config.weight_scale,
+        "fuse_relu": args.quantize_config.fuse_relu,
+        "fuse_clip": args.quantize_config.fuse_clip,
+        "fuse_conv_relu": args.quantize_config.fuse_conv_relu,
+        "fuse_reshape_dense": args.quantize_config.fuse_reshape_dense,
+        "channel_quantization": args.quantize_config.channel_quantization,
+        "broadcast_quantization": args.quantize_config.broadcast_quantization,
+        "channel_quantization_ratio_threshold": args.quantize_config.channel_quantization_ratio_threshold,
+        "fuse_mul_before_conv": args.quantize_config.fuse_mul_before_conv,
+        "fuse_mul_after_conv": args.quantize_config.fuse_mul_after_conv,
+        "fuse_add_before_conv": args.quantize_config.fuse_add_before_conv,
+        "fuse_add_after_conv": args.quantize_config.fuse_add_after_conv,
+        "layout": args.quantize_config.target_layout,
+        "quantization_scheme": args.quantize_config.quantization_scheme,
+        "fuse_zp2bias": args.quantize_config.fuse_zp2bias,
+        "use_custom_fusion": args.quantize_config.use_custom_fusion,
+        "convert_to_relay": args.quantize_config.convert_to_relay,
+        "hybrid_quantization_scheme": args.quantize_config.hybrid_quantization_scheme,
+        "hybrid_layer_name": args.quantize_config.hybrid_layer_name,
+        "h_max_out_channel": args.hardware_max_out_channel,
+        "h_max_kernel_size": args.hardware_max_kernel_size,
+        "h_contain_weight": args.hardware_contain_weight,
+        "h_align": args.hardware_alignment,
+        "auto_hybrid_quantization": args.quantize_config.auto_hybrid_quantization,
+        "quantization_loss_algorithm": args.quantize_config.quantization_loss_algorithm,
+        "quantization_loss_threshold": args.quantize_config.quantization_loss_threshold,
+        "dump_quantization_loss": args.quantize_config.dump_quantization_loss,
+        "params_path": args.output,
+        "model_save": args.model_save,
+        "trace_strategy": args.codegen_config.trace_strategy,
+        "input_memory_type": args.codegen_config.input_memory_type,
+        "output_memory_type": args.codegen_config.output_memory_type,
+        "model_priority": args.codegen_config.model_priority,
+        "structed_sparsity": args.structed_sparsity,
+        "kernel_parallel": args.kernel_parallel,
+        "target": args.board,
+        "multi_thread": args.codegen_config.multithread,
+    }
+    light_input_fix_size = args.preprocess_config.light_input_fix_size
+    if len(light_input_fix_size) == 2:
+        config_dict["light_input_fix_height"] = light_input_fix_size[0]
+        config_dict["light_input_fix_width"] = light_input_fix_size[1]
+
+    if args.board == "light" and args.codegen_config.model_save == "save_only":
+        config_dict["target"] = "light_new"
+
+    if args.verbose >= 3:
+        config_dict["debug_level"] = "INFO"
+
+    if args.codegen_config.model_save == "save_only":
+        config_dict["h_sram_size"] = (
+            2 ** 20 if not args.hardware_sram_size else args.hardware_sram_size
+        )
+        config_dict["h_max_groups"] = (
+            16 if not args.hardware_max_groups else args.hardware_max_groups
+        )
     return config_dict
 
 
@@ -135,23 +196,8 @@ def set_quantize_params_by_board(filtered_args, extra=None):
             "fuse_mul_add_to_conv": True,
             # "channel_quantization": False,
             "broadcast_quantization": True,
-            "h_contain_weight": False,
         }
-        if extra.model_save == "save_only":
-            # 1M
-            new_values["h_sram_size"] = (
-                2 ** 20
-                if not filtered_args.quantize_config.h_sram_size
-                else filtered_args.quantize_config.h_sram_size
-            )
-            new_values["h_max_groups"] = (
-                16
-                if not filtered_args.quantize_config.h_max_groups
-                else filtered_args.quantize_config.h_max_groups
-            )
         if filtered_args.quantize_config.channel_quantization:
-            if extra.model_save == "save_and_run":
-                hhb_exit("Light unsupport channel quantization on save_and_run mode.")
             if filtered_args.quantize_config.quantization_scheme != "int8_asym_w_sym":
                 hhb_exit(
                     "Light channel quantization only support with int8_asym_w_sym quantization scheme."
@@ -191,7 +237,7 @@ def set_quantize_params_by_board(filtered_args, extra=None):
         new_values = {
             "num_bit_input": 8,
             "num_bit_weight": 8,
-            # "num_bit_activation": 32,
+            "num_bit_activation": 32,
             "dtype_input": "float32",
             "dtype_weight": "float32",
             "dtype_activation": "float32",
@@ -204,11 +250,8 @@ def set_quantize_params_by_board(filtered_args, extra=None):
             "fuse_mul_add_to_conv": True,
             # "channel_quantization": False,
             "broadcast_quantization": True,
-            "h_contain_weight": False,
         }
-        if extra.model_save == "save_only":
-            new_values["h_sram_size"] = (2 ** 20,)  # 1M
-            new_values["h_max_groups"] = 16
+
         if filtered_args.quantize_config.channel_quantization:
             hhb_exit("HLight unsupport channel quantization.")
     elif filtered_args.board == "asp":
@@ -220,8 +263,8 @@ def set_quantize_params_by_board(filtered_args, extra=None):
             "dtype_weight": "int8",
             "dtype_activation": "int32",
             "calibrate_mode": "maxmin",
-            "weight_quantized_type": "asym",
-            "activate_quantized_type": "sym",
+            "weight_quantized_type": "sym",
+            "activate_quantized_type": "asym",
             "weight_scale": "maxmin",
             "fuse_conv_relu": False,
             "fuse_relu": True,
@@ -255,12 +298,12 @@ def set_quantize_params_by_board(filtered_args, extra=None):
             hhb_exit("i805 unsupport channel quantization.")
     elif filtered_args.board == "c906":
         new_values = {
-            "num_bit_input": 8,
-            "num_bit_weight": 8,
+            "num_bit_input": 16,
+            "num_bit_weight": 16,
             # "num_bit_activation": 32,
-            "dtype_input": "float32",
-            "dtype_weight": "float32",
-            "dtype_activation": "float32",
+            "dtype_input": "float16",
+            "dtype_weight": "float16",
+            "dtype_activation": "float16",
             "calibrate_mode": "maxmin",
             "weight_quantized_type": "sym",
             "activate_quantized_type": "sym",
@@ -284,62 +327,18 @@ def set_quantize_params_by_board(filtered_args, extra=None):
             "weight_quantized_type": "sym",
             "activate_quantized_type": "sym",
             "weight_scale": "maxmin",
-            "fuse_conv_relu": False,
+            # "fuse_conv_relu": False,
             "fuse_relu": False,
             # "fuse_reshape": False,
             "fuse_mul_add_to_conv": True,
             # "channel_quantization": False,
             # "broadcast_quantization": False,
         }
-    elif filtered_args.board == "ch8601":
-        new_values = {
-            "num_bit_input": 8,
-            "num_bit_weight": 8,
-            # "num_bit_activation": 32,
-            "dtype_input": "float32",
-            "dtype_weight": "float32",
-            "dtype_activation": "float32",
-            "calibrate_mode": "maxmin",
-            "weight_quantized_type": "sym",
-            "activate_quantized_type": "sym",
-            "weight_scale": "maxmin",
-            "fuse_conv_relu": False,
-            "fuse_relu": False,
-            # "fuse_reshape": False,
-            "fuse_mul_add_to_conv": False,
-            "channel_quantization": True,
-            # "broadcast_quantization": False,
-        }
-        if not filtered_args.quantize_config.quantization_scheme in ("unset", "int8_sym"):
-            raise HHBException("CH8601 only support int8_sym\n")
-        if filtered_args.quantize_config.channel_quantization:
-            hhb_exit("CH8601 unsupport channel quantization.")
-    elif filtered_args.board == "dp1k":
-        new_values = {
-            "num_bit_input": 8,
-            "num_bit_weight": 8,
-            # "num_bit_activation": 32,
-            "dtype_input": "float32",
-            "dtype_weight": "float32",
-            "dtype_activation": "float32",
-            "calibrate_mode": "maxmin",
-            "weight_quantized_type": "sym",
-            "activate_quantized_type": "sym",
-            "weight_scale": "maxmin",
-            "fuse_conv_relu": False,
-            "fuse_relu": False,
-            # "fuse_reshape": False,
-            "fuse_mul_add_to_conv": False,
-            "channel_quantization": True,
-            # "broadcast_quantization": False,
-        }
-        if not filtered_args.quantize_config.quantization_scheme in ("unset", "int8_sym"):
-            raise HHBException("DP1K only support int8_sym\n")
     else:
         new_values = {
             "num_bit_input": 8,
             "num_bit_weight": 8,
-            # "num_bit_activation": 32,
+            "num_bit_activation": 32,
             "dtype_input": "uint8",
             "dtype_weight": "uint8",
             "dtype_activation": "int32",
@@ -355,22 +354,19 @@ def set_quantize_params_by_board(filtered_args, extra=None):
             # "broadcast_quantization": False,
         }
 
-    if filtered_args.board != "x86_ref":
-        if (
-            filtered_args.quantize_config.hybrid_quantization_scheme != "unset"
-            or filtered_args.quantize_config.hybrid_layer_name is not None
-        ):
-            raise HHBException("Only 'x86_ref' target support for hybrid-quantization.\n")
+    # if filtered_args.board != "x86_ref":
+    #     if (
+    #         filtered_args.quantize_config.hybrid_quantization_scheme != "unset"
+    #         or filtered_args.quantize_config.hybrid_layer_name is not None
+    #     ):
+    #         raise HHBException("Only 'x86_ref' target support for hybrid-quantization.\n")
 
     if filtered_args.quantize_config.channel_quantization:
         if filtered_args.quantize_config.broadcast_quantization:
-            if (
-                filtered_args.board not in ("light", "x86_ref")
-                or filtered_args.quantize_config.quantization_scheme != "int8_asym_w_sym"
-            ):
+            if filtered_args.quantize_config.quantization_scheme != "int8_asym_w_sym":
                 raise HHBException(
-                    "--broadcast-quantization can't be set while board is not light/x86_ref with "
-                    "int8_asym_w_sym quantization and --channel-quantization is set.\n"
+                    "--broadcast-quantization can't be set with --channel-quantization while"
+                    "quantization_scheme != int8_asym_w_sym.\n"
                 )
 
     if filtered_args.quantize_config.quantization_scheme == "unset":
@@ -451,6 +447,15 @@ def set_quantize_params_by_board(filtered_args, extra=None):
         new_values["dtype_activation"] = "bfloat16"
         new_values["activate_quantized_type"] = "sym"
         new_values["weight_quantized_type"] = "sym"
+    elif filtered_args.quantize_config.quantization_scheme == "float32":
+        new_values["num_bit_input"] = 32
+        new_values["num_bit_weight"] = 32
+        new_values["num_bit_activation"] = 32
+        new_values["dtype_input"] = "float32"
+        new_values["dtype_weight"] = "float32"
+        new_values["dtype_activation"] = "float32"
+        new_values["activate_quantized_type"] = "sym"
+        new_values["weight_quantized_type"] = "sym"
     else:
         raise HHBException("Unsupport quantization scheme.\n")
 
@@ -487,6 +492,15 @@ def set_quantize_params_by_board(filtered_args, extra=None):
         ] = filtered_args.quantize_config.activate_quantized_type
 
     filtered_args.quantize_config.update(new_values)
+
+    if (
+        filtered_args.quantize_config.broadcast_quantization
+        and filtered_args.quantize_config.fuse_relu
+        and filtered_args.board != "asp"
+    ):
+        raise HHBException(
+            "--broadcast-quantization and --fuse_relu can only be used simultaneously when the board is ASP.\n"
+        )
 
 
 def quantize_model(mod, params, qconfig, dataset=None, target="x86_ref"):

@@ -38,10 +38,10 @@ class CodegenRef : public CodegenCSINN {
   CodegenRef() : CodegenCSINN() {}
   virtual ~CodegenRef() {}
 
+  virtual void EmitReadParams();
   virtual void GenerateBackendCFunc(const string& func_name, const Array<Var>& args,
                                     const Output& out);
   virtual string JitImpl(const string& ext_func_id, const Array<Var>& args,
-                         const std::vector<string>& buf_decl, const std::vector<string>& body,
                          const std::vector<Output>& out);
   virtual string JIT(const std::vector<Output>& out);
   virtual string JIT(void);

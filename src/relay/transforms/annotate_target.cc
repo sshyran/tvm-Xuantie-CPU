@@ -268,8 +268,9 @@ class AnnotateTargetRewriter : public ExprRewriter {
 
   Expr Rewrite_(const TupleNode* op, const Expr& post) override {
     auto expr = Downcast<Tuple>(post);
+    std::string target = this->targets_[0];
 
-    auto target_n_args = AnnotateArgs(expr->fields);
+    auto target_n_args = AnnotateArgs(expr->fields, target);
     auto new_expr = Tuple(std::get<1>(target_n_args));
     op_expr_to_target_[new_expr] = std::get<0>(target_n_args);
     return std::move(new_expr);

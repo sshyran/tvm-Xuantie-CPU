@@ -175,6 +175,7 @@ def find_include_path(name=None, search_path=None, optional=False):
     """
     ffi_dir = os.path.dirname(os.path.abspath(os.path.expanduser(__file__)))
     hhb_dir = os.path.join(ffi_dir, "..", "..")
+    hhb_tvm_inc_dir = os.path.join(ffi_dir, "..", "..", "tvm")
     source_dir = os.path.join(ffi_dir, "..", "..", "..")
 
     third_party_dir = os.path.join(source_dir, "3rdparty")
@@ -187,6 +188,7 @@ def find_include_path(name=None, search_path=None, optional=False):
     header_path.append(source_dir)
     header_path.append(third_party_dir)
     header_path.append(hhb_dir)
+    header_path.append(hhb_tvm_inc_dir)
 
     header_path = [os.path.abspath(x) for x in header_path]
     if search_path is not None:

@@ -35,8 +35,8 @@ namespace contrib {
 using namespace backend;
 
 void CodegenAnole::EmitHeader(void) {
-  PrintOneLine(code_stream_, "#include <csi_ovx.h>");
-  PrintNewLine(code_stream_);
+  func_def_.OneLine("#include <shl_ovx.h>");
+  func_def_.NewLine();
 }
 
 void CodegenAnole::EmitSessionSetup(void) {
@@ -47,80 +47,67 @@ void CodegenAnole::EmitSessionSetup(void) {
   } else {
     t0 << "char *params_base) {";
   }
-  PrintOneLine(code_stream_, t0);
-  EnterScope();
+  func_def_.OneLine(t0);
+  func_def_.EnterScope();
 
-  PrintOneLine(code_stream_, "struct csi_session *sess = csi_alloc_session();");
+  func_def_.OneLine("struct csinn_session *sess = csinn_alloc_session();");
   SessionRunMode();
   ModelBinarySave();
   t0 << "sess->base_api = " << target_name_ << ";";
-  PrintOneLine(code_stream_, t0);
+  func_def_.OneLine(t0);
   t0 << "sess->base_dtype = " << base_dtype_ << ";";
-  PrintOneLine(code_stream_, t0);
+  func_def_.OneLine(t0);
   if (debug_level_ == "INFO") {
-    PrintOneLine(code_stream_, "sess->debug_level = CSI_DEBUG_LEVEL_INFO;");
+    func_def_.OneLine("sess->debug_level = CSINN_DEBUG_LEVEL_INFO;");
   }
-  PrintOneLine(code_stream_, "csi_session_init(sess);");
+  func_def_.OneLine("csinn_session_init(sess);");
 
   if (multithread) {
-    PrintOneLine(code_stream_, "csi_ovx_set_graph_attribute(sess, deviceIndex);");
+    func_def_.OneLine("shl_ovx_set_graph_attribute(sess, deviceIndex);");
   }
 
-  t0 << "csi_set_input_number(" << ext_func_args_.size() << ", sess);";
-  PrintOneLine(code_stream_, t0);
-  t0 << "csi_set_output_number(" << output_list_.size() << ", sess);";
-  PrintOneLine(code_stream_, t0);
-  // Function body
-  PrintNewLine(code_stream_);
-  for (auto decl : buf_decl_) {
-    PrintOneLine(code_stream_, decl);
-  }
-  PrintNewLine(code_stream_);
+  t0 << "csinn_set_input_number(" << ext_func_args_.size() << ", sess);";
+  func_def_.OneLine(t0);
+  t0 << "csinn_set_output_number(" << output_list_.size() << ", sess);";
+  func_def_.OneLine(t0);
+
+  func_def_.NewLine();
   for (uint32_t i = 0; i < ext_func_args_.size(); i++) {
-    std::string new_name = CodegenCSINN::replace(ext_func_args_[i]->name_hint());
-    auto iter = io_nodes.find(new_name);
-    if (iter == io_nodes.end()) {
-      CHECK(0);
-    }
-    QuantParams q_params = iter->second;
-    string in_name = q_params.name;
+    std::string in_name = CodegenCSINN::replace(ext_func_args_[i]->name_hint());
     std::ostringstream t1;
-    t1 << "csi_set_tensor_entry(" << in_name << ", sess);\n";
-    PrintIndents(t1);
-    t1 << "csi_set_input(" << i << ", " << in_name << ", sess);";
-    PrintOneLine(code_stream_, t1);
+    t1 << "csinn_set_tensor_entry(" << in_name << ", sess)";
+    func_def_.PushDecl(t1);
+    t1 << "csinn_set_input(" << i << ", " << in_name << ", sess)";
+    func_def_.PushDecl(t1);
   }
 
-  PrintNewLine(code_stream_);
-  for (auto stmt : ext_func_body) {
-    PrintOneLine(code_stream_, stmt);
-  }
+  func_def_.BufToCode();
 
   for (uint32_t i = 0; i < output_list_.size(); i++) {
     if (!output_list_[i].is_const) {
       string output_name = output_list_[i].name;
-      t0 << "csi_set_output(" << i << ", " << output_name << ", sess);";
-      PrintOneLine(code_stream_, t0);
+      t0 << "csinn_set_output(" << i << ", " << output_name << ", sess);";
+      func_def_.OneLine(t0);
     } else {
       t0 << output_list_[i].name << "->name = "
          << "\"" << output_list_[i].name << "\";";
-      PrintOneLine(code_stream_, t0);
+      func_def_.OneLine(t0);
       t0 << output_list_[i].name << "->dtype = CSINN_DTYPE_FLOAT32;";
-      PrintOneLine(code_stream_, t0);
+      func_def_.OneLine(t0);
       t0 << output_list_[i].name << "->is_const = 1;";
-      PrintOneLine(code_stream_, t0);
-      t0 << "csi_set_tensor_entry(" << output_list_[i].name << ", sess);";
-      PrintOneLine(code_stream_, t0);
-      t0 << "csi_set_output(" << i << ", " << output_list_[i].name << ", sess);";
-      PrintOneLine(code_stream_, t0);
+      func_def_.OneLine(t0);
+      t0 << "csinn_set_tensor_entry(" << output_list_[i].name << ", sess);";
+      func_def_.OneLine(t0);
+      t0 << "csinn_set_output(" << i << ", " << output_list_[i].name << ", sess);";
+      func_def_.OneLine(t0);
     }
   }
 
-  PrintNewLine(code_stream_);
-  PrintOneLine(code_stream_, "csi_session_setup(sess);");
-  PrintOneLine(code_stream_, "return sess;");
-  ExitScope();
-  PrintOneLine(code_stream_, "}");
+  func_def_.NewLine();
+  func_def_.OneLine("csinn_session_setup(sess);");
+  func_def_.OneLine("return sess;");
+  func_def_.ExitScope();
+  func_def_.OneLine("}");
 }
 
 void CodegenAnole::EmitNBGSetup(void) {
@@ -135,10 +122,10 @@ void CodegenAnole::EmitNBGSetup(void) {
       }
       QuantParams q_params = iter->second;
       std::ostringstream t0;
-      t0 << "csi_set_tensor_entry(" << output_name << ", sess);";
+      t0 << "csinn_set_tensor_entry(" << output_name << ", sess);";
       nbg_func_.push_back(t0.str());
       t0.str("");
-      t0 << "csi_set_output(" << i << ", " << output_name << ", sess);";
+      t0 << "csinn_set_output(" << i << ", " << output_name << ", sess);";
       nbg_func_.push_back(t0.str());
     }
   }
@@ -148,56 +135,58 @@ void CodegenAnole::EmitNBGSetup(void) {
     QuantParams q_params = iter->second;
     string in_name = q_params.name;
     std::ostringstream t0;
-    t0 << "csi_set_tensor_entry(" << in_name << ", sess);";
+    t0 << "csinn_set_tensor_entry(" << in_name << ", sess);";
     nbg_func_.push_back(t0.str());
 
     t0.str("");
-    t0 << "csi_set_input(" << i << ", " << in_name << ", sess);";
+    t0 << "csinn_set_input(" << i << ", " << in_name << ", sess);";
     nbg_func_.push_back(t0.str());
   }
   // codegen for binary graph function
-  PrintNewLine(code_stream_);
+  func_def_.NewLine();
   if (multithread) {
     t0 << "void *csinn_nbg(char *path, int deviceIndex) {";
   } else {
     t0 << "void *csinn_nbg(char *path) {";
   }
-  PrintOneLine(code_stream_, t0);
-  EnterScope();
+  func_def_.OneLine(t0);
+  func_def_.EnterScope();
 
   // function body
-  PrintOneLine(code_stream_, "struct csi_session *sess = csi_alloc_session();");
+  func_def_.OneLine("struct csinn_session *sess = csinn_alloc_session();");
   t0 << "sess->base_api = " << target_name_ << ";";
-  PrintOneLine(code_stream_, t0);
+  func_def_.OneLine(t0);
   t0 << "sess->base_dtype = " << base_dtype_ << ";";
-  PrintOneLine(code_stream_, t0);
-  PrintOneLine(code_stream_, "csi_session_init(sess);");
+  func_def_.OneLine(t0);
+  func_def_.OneLine("csinn_session_init(sess);");
 
   if (multithread) {
-    PrintOneLine(code_stream_, "csi_ovx_set_graph_attribute(sess, deviceIndex);");
+    func_def_.OneLine("shl_ovx_set_graph_attribute(sess, deviceIndex);");
   }
 
-  t0 << "csi_set_input_number(" << ext_func_args_.size() << ", sess);";
-  PrintOneLine(code_stream_, t0);
-  t0 << "csi_set_output_number(" << output_list_.size() << ", sess);";
-  PrintOneLine(code_stream_, t0);
+  t0 << "csinn_set_input_number(" << ext_func_args_.size() << ", sess);";
+  func_def_.OneLine(t0);
+  t0 << "csinn_set_output_number(" << output_list_.size() << ", sess);";
+  func_def_.OneLine(t0);
 
-  PrintNewLine(code_stream_);
+  func_def_.NewLine();
   std::map<string, QuantParams>::iterator iter;
   for (iter = io_nodes.begin(); iter != io_nodes.end(); iter++) {
     CreateGraphTensor(iter->second);
   }
 
   for (auto decl : nbg_func_) {
-    PrintOneLine(code_stream_, decl);
+    func_def_.OneLine(decl);
   }
 
-  t0 << "csi_load_binary_model(path, sess);";
-  PrintOneLine(code_stream_, t0);
-  PrintOneLine(code_stream_, "return sess;");
+  t0 << "sess->model.bm_path = path;";
+  func_def_.OneLine(t0);
+  t0 << "csinn_load_binary_model(sess);";
+  func_def_.OneLine(t0);
+  func_def_.OneLine("return sess;");
 
-  ExitScope();
-  PrintOneLine(code_stream_, "}");
+  func_def_.ExitScope();
+  func_def_.OneLine("}");
 }
 
 void CodegenAnole::VisitExpr_(const CallNode* call) {
@@ -300,6 +289,7 @@ void CodegenAnole::VisitExpr_(const CallNode* call) {
 void CodegenAnole::DisoOp(const CallNode* call, string op_name) {
   std::ostringstream decl_stream;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnBinaryOpAttrs>();
   CHECK(attr);
   QuantParams* q_params = GetQuantParams(attr->q_params);
@@ -314,7 +304,7 @@ void CodegenAnole::DisoOp(const CallNode* call, string op_name) {
   VisitExpr(call->args[0]);
   CHECK(out_.size() == 1) << "Every args expects a single out_";
   auto lhs_input = out_[0];
-  lhs_name = CodegenCSINN::InputTensor(decl_stream, call, 0, q_params[0], cfg->dtype_weight);
+  lhs_name = CodegenCSINN::InputTensor(op, decl_stream, call, 0, q_params[0], cfg->dtype_weight);
   decl_stream << ", ";
 
   /* Emit input1 tensor */
@@ -322,7 +312,7 @@ void CodegenAnole::DisoOp(const CallNode* call, string op_name) {
     VisitExpr(call->args[1]);
     CHECK(out_.size() == 1) << "Every args expects a single out_";
     auto rhs_input = out_[0];
-    rhs_name = CodegenCSINN::InputTensor(decl_stream, call, 1, q_params[1], cfg->dtype_weight);
+    rhs_name = CodegenCSINN::InputTensor(op, decl_stream, call, 1, q_params[1], cfg->dtype_weight);
 
   } else {
     // add constant arg
@@ -333,21 +323,21 @@ void CodegenAnole::DisoOp(const CallNode* call, string op_name) {
     auto rhs_shape = GetShape(call->args[1]->checked_type());
 
     rhs_name = "rhs_" + to_string(buf_idx_);
-    CreateConstantTensor(&rhs, rhs_name, rhs_shape, cfg->dtype_weight, q_params[1]);
-    t0 << rhs_name << "->dtype = CSINN_DTYPE_UINT8";
-    PushDeclLine(t0);
-    t0 << "csi_set_tensor_entry(" << rhs_name << ", sess)";
-    PushDeclLine(t0);
+    CreateConstantTensor(op, &rhs, rhs_name, rhs_shape, cfg->dtype_weight, q_params[1]);
+    CSINNTensor* tensor = op->get_tensor(rhs_name);
+    tensor->tensor->dtype = CSINN_DTYPE_UINT8;
+    t0 << "csinn_set_tensor_entry(" << rhs_name << ", sess)";
+    tensor->append_str(t0);
     decl_stream << rhs_name;
   }
 
   /* Emit output tensor */
-  string output_name = OutputTensor(decl_stream, call, q_params[2], cfg->dtype_weight);
+  string output_name = OutputTensor(op, decl_stream, call, q_params[2], cfg->dtype_weight);
 
   string params_name = "params_" + to_string(buf_idx_);
   decl_stream << ", " << params_name << ")";
-
-  malloc_params("diso_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_diso_params", params_name);
   PushOutput(output_name, call);
   buf_idx_++;
   params_common_setup(decl_stream, call, op_name, params_name, attr->layer_name.c_str(),
@@ -358,27 +348,30 @@ void CodegenAnole::DisoOp(const CallNode* call, string op_name) {
 void CodegenAnole::Flatten(const CallNode* call) {
   std::ostringstream decl_stream;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSIUnaryAttrs>();
 
   string callback;
   if (CheckOutput(call) != -1) {
-    callback = "csi_ovx_flatten_tail";
+    callback = "shl_ovx_flatten_tail";
   } else {
-    callback = "csi_ovx_flatten";
+    callback = "shl_ovx_flatten";
   }
 
-  SisoOp<QnnCSIUnaryAttrs>(decl_stream, call, attr);
+  SisoOp<QnnCSIUnaryAttrs>(op, decl_stream, call, attr);
 
   string params_name = "params_" + to_string(buf_idx_);
   decl_stream << ", " << params_name << ")";
-
-  malloc_params("flatten_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_flatten_params", params_name);
   t0 << params_name << "->base.layout = CSINN_LAYOUT_NCHW";
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->base.api = CSINN_ANOLE";
-  PushDeclLine(t0);
-  t0 << params_name << "->base.bc = " << callback;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
+  t0 << "struct csinn_callback *" << params_name << "_cb = " << params_name << "->base.cb";
+  func_def_.PushDecl(t0);
+  t0 << params_name << "_cb->est = " << callback;
+  func_def_.PushDecl(t0);
 
   end_stream(decl_stream, "flatten");
 }
@@ -386,15 +379,16 @@ void CodegenAnole::Flatten(const CallNode* call) {
 void CodegenAnole::Squeeze(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSISqueezeAttrs>();
   string callback;
   if (CheckOutput(call) != -1) {
-    callback = "csi_ovx_squeeze_tail";
+    callback = "shl_ovx_squeeze_tail";
   } else {
-    callback = "csi_ovx_squeeze";
+    callback = "shl_ovx_squeeze";
   }
 
-  SisoOp<QnnCSISqueezeAttrs>(decl, call, attr);
+  SisoOp<QnnCSISqueezeAttrs>(op, decl, call, attr);
 
   string squeeze_axis_name = "squeeze_aixs_" + to_string(buf_idx_);
   int32_t squeeze_axis_dim_num = attr->axis.size();
@@ -403,37 +397,40 @@ void CodegenAnole::Squeeze(const CallNode* call) {
     t0 << to_string(attr->axis[i].as<IntImmNode>()->value) << ", ";
   }
   t0 << "}";
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-
-  malloc_params("squeeze_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_squeeze_params", params_name);
   t0 << params_name << "->base.layout = CSINN_LAYOUT_NCHW";
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->base.api = CSINN_ANOLE";
-  PushDeclLine(t0);
-  t0 << params_name << "->base.bc = " << callback;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
+  t0 << "struct csinn_callback *" << params_name << "_cb = " << params_name << "->base.cb";
+  func_def_.PushDecl(t0);
+  t0 << params_name << "_cb->est = " << callback;
+  func_def_.PushDecl(t0);
   t0 << params_name << "->axis = " << squeeze_axis_name;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->axis_num = " << squeeze_axis_dim_num;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   end_stream(decl, "squeeze");
 }
 
 void CodegenAnole::Reshape(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSIReshapeAttrs>();
   string callback;
   if (CheckOutput(call) != -1) {
-    callback = "csi_ovx_reshape_tail";
+    callback = "shl_ovx_reshape_tail";
   } else {
-    callback = "csi_ovx_reshape";
+    callback = "shl_ovx_reshape";
   }
 
-  SisoOp<QnnCSIReshapeAttrs>(decl, call, attr);
+  SisoOp<QnnCSIReshapeAttrs>(op, decl, call, attr);
 
   auto out_shape = GetShape(call->checked_type());
   string new_shape_name = "shape_" + to_string(buf_idx_);
@@ -443,41 +440,43 @@ void CodegenAnole::Reshape(const CallNode* call) {
     t0 << to_string(out_shape[i]) << ", ";
   }
   t0 << "}";
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-
-  malloc_params("reshape_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_reshape_params", params_name);
   t0 << params_name << "->base.layout = CSINN_LAYOUT_NCHW";
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->base.api = CSINN_ANOLE";
-  PushDeclLine(t0);
-  t0 << params_name << "->base.bc = " << callback;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
+  t0 << "struct csinn_callback *" << params_name << "_cb = " << params_name << "->base.cb";
+  func_def_.PushDecl(t0);
+  t0 << params_name << "_cb->est = " << callback;
+  func_def_.PushDecl(t0);
   t0 << params_name << "->shape = " << new_shape_name;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->shape_num = " << new_shape_dim_num;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
   end_stream(decl, "reshape");
 }
 
 void CodegenAnole::ModelBinarySave() {
   std::ostringstream t0;
-  t0 << "sess->model_name = \"network.nb\";";
-  PrintOneLine(code_stream_, t0);
+  t0 << "sess->model.bm_path = \"network.nb\";";
+  func_def_.OneLine(t0);
   if (model_save == "run_only") {
-    t0 << "sess->model_save = CSINN_RUN_ONLY;";
+    t0 << "sess->model.save_mode = CSINN_RUN_ONLY;";
   } else if (model_save == "save_only") {
-    t0 << "sess->model_save = CSINN_SAVE_ONLY;";
+    t0 << "sess->model.save_mode = CSINN_SAVE_ONLY;";
   } else if (model_save == "save_and_run") {
-    t0 << "sess->model_save = CSINN_SAVE_AND_RUN;";
+    t0 << "sess->model.save_mode = CSINN_SAVE_AND_RUN;";
   } else {
-    std::cerr << "Unsupport for model_save type: " << model_save << "\n";
+    std::cerr << "Unsupport for model save_mode type: " << model_save << "\n";
     exit(-1);
   }
-  PrintOneLine(code_stream_, t0);
+  func_def_.OneLine(t0);
 }
 
 }  // namespace contrib

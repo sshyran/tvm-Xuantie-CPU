@@ -14,9 +14,14 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+"""FFI APIs for CSINN api."""
+from . import _csinn
 
-# pylint: disable=redefined-builtin, wildcard-import
-""" CSINN ops """
-from __future__ import absolute_import as _abs
 
-from .impl import *
+def collect_quant_info():
+    quant = _csinn.collect_quant_info()
+    return quant
+
+
+def emit_binary_model(path, section_map):
+    return _csinn.emit_binary_model(path, section_map)

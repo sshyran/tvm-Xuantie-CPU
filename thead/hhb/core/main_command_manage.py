@@ -19,7 +19,7 @@ import logging
 import os
 import numpy as np
 import tvm
-from tvm.contrib import graph_executor, hhb_runtime
+from tvm.contrib import graph_executor
 
 from .arguments_manage import ArgumentFilter
 from .frontend_manage import import_model
@@ -32,11 +32,13 @@ from .hhbir_manage import (
     HHBBoardQnnCodegenIR,
     get_input_info_from_relay,
     get_output_info_from_relay,
+    reorder_pixel_format,
 )
 from .quantization_manage import (
     collect_quantization_config,
     set_quantize_params_by_board,
-    get_quantize_config,
+    get_config_dict,
+    update_hybrid_layer,
 )
 from .preprocess_manage import (
     collect_preprocess_config,
@@ -115,6 +117,18 @@ def driver_main_command(args_filter: ArgumentFilter):
     mod, params = import_model(
         args.model_file, args.model_format, args.input_name, args.input_shape, args.output_name
     )
+
+    if args.reorder_pixel_format:
+        mod, params = reorder_pixel_format(mod, params)
+
+        if args.pixel_format == "RGB":
+            args.pixel_format = "BGR"
+        else:
+            args.pixel_format = "RGB"
+
+        if args.data_mean:
+            args.data_mean = args.data_mean[::-1]
+
     logger.debug("Relay model:")
     logger.debug(mod["main"])
     logger.log(LOG, "Model import completed! ")
@@ -158,12 +172,12 @@ def driver_main_command(args_filter: ArgumentFilter):
         if params:
             mod["main"] = _bind_params(mod["main"], params)
             params = None
-        if args.preprocess_config.pixel_format == "RGB":
-            args.preprocess_config.data_mean = args.preprocess_config.data_mean[::-1]
         mod = transform.AddPreprocessNode(
             args.preprocess_config.data_mean, args.preprocess_config.data_scale
         )(mod)
         logger.debug("Insert preprocess node into model successfully!")
+
+    config_dict = get_config_dict(args)
 
     if not args.no_quantize:
         logger.log(LOG, "Start quantization.")
@@ -177,7 +191,6 @@ def driver_main_command(args_filter: ArgumentFilter):
             for d in dataset:
                 dataset_list.append(d)
 
-        config_dict = get_quantize_config(args.quantize_config)
         qnn_ir = HHBQNNIR()
         qnn_ir.convert((mod, params), config_dict, dataset_list, args.board)
         logger.log(LOG, "Quantization completed!")
@@ -202,9 +215,10 @@ def driver_main_command(args_filter: ArgumentFilter):
         "c860",
         "c906",
         "c908",
-        "ch8601",
-        "dp1k",
     )
+    config_dict = get_config_dict(args)
+    if config_dict["auto_hybrid_quantization"]:
+        update_hybrid_layer(config_dict, args.output)
     light_input_fix_size = args.preprocess_config.light_input_fix_size
     is_x86 = True
     if args.board == "x86_ref":
@@ -213,8 +227,6 @@ def driver_main_command(args_filter: ArgumentFilter):
             x86_codegen_ir.convert((mod, params), args.board, args.opt_level)
         else:
             x86_codegen_ir = HHBX86QnnCodegenIR()
-            config_dict = get_quantize_config(args.quantize_config)
-            config_dict["model_save"] = args.model_save
             x86_codegen_ir.convert(
                 qnn_ir.get_model(), args.board, args.opt_level, args.output, config_dict
             )
@@ -225,22 +237,13 @@ def driver_main_command(args_filter: ArgumentFilter):
                 "can not set '--no-quantize' with '--board {}'.\n".format(args.board)
             )
         board_codegen_ir = HHBBoardQnnCodegenIR()
-        config_dict = get_quantize_config(args.quantize_config)
-        if len(light_input_fix_size) == 2:
-            config_dict["light_input_fix_height"] = light_input_fix_size[0]
-            config_dict["light_input_fix_width"] = light_input_fix_size[1]
-        config_dict["trace_strategy"] = args.codegen_config.trace_strategy
-        config_dict["input_memory_type"] = args.codegen_config.input_memory_type
-        config_dict["output_memory_type"] = args.codegen_config.output_memory_type
+
         board_codegen_ir.convert(
             qnn_ir.get_model(),
             args.board,
             args.opt_level,
             args.output,
-            args.verbose,
             config_dict,
-            args.codegen_config.multithread,
-            args.codegen_config.model_save,
         )
     else:
         raise HHBException("unsupport for board: {}.\n".format(args.board))
@@ -339,13 +342,11 @@ def driver_main_command(args_filter: ArgumentFilter):
     if args.no_quantize:
         m = graph_executor.GraphModule(x86_codegen_ir.get_model()["default"](ctx))
     else:
-        input_name_list, input_shape_list, _ = get_input_info_from_relay(
-            qnn_ir.get_model()[0], None
-        )
-        m = hhb_runtime.create(
-            x86_codegen_ir.get_model(), qnn_ir.get_model()[0], ctx, output_dir=args.output
-        )
-        m.set_params(os.path.join(args.output, x86_codegen_ir.params_name))
+        factory = x86_codegen_ir.get_factory()
+        lib = x86_codegen_ir.get_lib(args.output)
+        m = tvm.contrib.graph_executor.create(factory.get_graph_json(), lib, tvm.cpu(0))
+        m.load_params(tvm.runtime.save_param_dict(factory.get_params()))
+
     dl = DatasetLoader(
         args.simulate_data,
         args.preprocess_config,

@@ -109,7 +109,11 @@ class HHBTensorflowFrontend(TensorflowFrontend):
 
         input_dict = dict()
         for idx, name in enumerate(input_name):
-            input_dict[name] = input_shape[idx]
+            target_shape = input_shape[idx]
+            if len(target_shape) == 4:
+                # convert into NCHW
+                target_shape[1], target_shape[3] = target_shape[3], target_shape[1]
+            input_dict[name] = target_shape
 
         with tf.io.gfile.GFile(pb_path, "rb") as tf_graph:
             content = tf_graph.read()

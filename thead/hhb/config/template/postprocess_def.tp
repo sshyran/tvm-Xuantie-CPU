@@ -3,21 +3,21 @@
  */
 static void postprocess(void *sess, const char *filename_prefix) {
     int output_num, input_num;
-    struct csi_tensor *input = csi_alloc_tensor(NULL);
-    struct csi_tensor *output = csi_alloc_tensor(NULL);
+    struct csinn_tensor *input = csinn_alloc_tensor(NULL);
+    struct csinn_tensor *output = csinn_alloc_tensor(NULL);
 
-    input_num = csi_get_input_number(sess);
+    input_num = csinn_get_input_number(sess);
     for (int i = 0; i < input_num; i++) {
         input->data = NULL;
-        csi_get_input(i, input, sess);
+        csinn_get_input(i, input, sess);
         print_tensor_info(input);
         #_free_anole_input_data_#
     }
 
-    output_num = csi_get_output_number(sess);
+    output_num = csinn_get_output_number(sess);
     for (int i = 0; i < output_num; i++) {
         output->data = NULL;
-        csi_get_output(i, output, sess);
+        csinn_get_output(i, output, sess);
         print_tensor_info(output);
 
         #_convert_fouput_#

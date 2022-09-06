@@ -36,6 +36,10 @@ if(USE_OPENCL)
   endif()
 endif()
 
+if(USE_CSINN STREQUAL "C906")
+  set_property(TARGET tvm_rpc APPEND PROPERTY LINK_FLAGS "-L../../ -lshl_c906")
+endif()
+
 target_include_directories(
   tvm_rpc
   PUBLIC "../../include"

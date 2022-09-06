@@ -91,7 +91,7 @@ set(USE_MICRO OFF)
 set(USE_RPC ON)
 
 # Whether to build the C++ RPC server binary
-set(USE_CPP_RPC OFF)
+set(USE_CPP_RPC ON)
 
 # Whether to build the iOS RPC server application
 set(USE_IOS_RPC OFF)

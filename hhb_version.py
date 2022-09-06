@@ -29,7 +29,8 @@ import time
 # current version
 # We use the version of the incoming release for code
 # that is under development
-__version__ = "1.12.0"
+__version__ = "2.0.4"
+
 __build_time__ = time.strftime("%Y%m%d", time.localtime())
 
 # Implementations
@@ -79,10 +80,10 @@ def main():
     update_version(os.path.join(proj_root, "thead", "hhb", "config", "thead.tp"))
     update_version(os.path.join(proj_root, "thead", "hhb", "config", "anole.tp"))
     update_version(os.path.join(proj_root, "thead", "hhb", "config", "light.tp"))
-    update_version(os.path.join(proj_root, "thead", "hhb", "config", "bc_map.tp"))
+    update_version(os.path.join(proj_root, "thead", "hhb", "config", "cb_map.tp"))
     update_version(os.path.join(proj_root, "thead", "hhb", "config", "anole_multithread.tp"))
     update_version(os.path.join(proj_root, "thead", "hhb", "config", "c906.tp"))
-    update_version(os.path.join(proj_root, "thead", "hhb", "config", "dp1k.tp"))
+    update_version(os.path.join(proj_root, "thead", "hhb", "config", "binary_model", "header.tp"))
     update_version(os.path.join(proj_root, "thead", "hhb", "config", "process", "include", "io.h"))
     update_version(
         os.path.join(proj_root, "thead", "hhb", "config", "process", "include", "process.h")

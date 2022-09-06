@@ -17,7 +17,7 @@
  * under the License.
  */
 
-/* auto generate by HHB_VERSION "1.12.0" */
+/* auto generate by HHB_VERSION "2.0.4" */
 
 #include "io.h"
 
@@ -91,7 +91,7 @@ void save_data_to_file(const char* filename, float* data, uint32_t size) {
  * \return The char data of params
  *
  */
-char* get_binary_from_file(const char* filename) {
+char* get_binary_from_file(const char* filename, int* size) {
   char* buffer = NULL;
   int file_size;
   int ret;
@@ -117,6 +117,9 @@ char* get_binary_from_file(const char* filename) {
   }
 
   fclose(fp);
+  if (size) {
+    *size = file_size;
+  }
   return buffer;
 }
 

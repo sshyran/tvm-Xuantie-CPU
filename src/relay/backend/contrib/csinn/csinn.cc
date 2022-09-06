@@ -25,8 +25,6 @@
 #include "csinn.h"
 
 #include "anole.h"
-#include "ch8601.h"
-#include "dp1k.h"
 #include "gref.h"
 #include "light.h"
 
@@ -88,44 +86,9 @@ void CodegenCSINN::VisitExpr_(const TupleNode* op) {
     // output expr
     first_visit_expr = false;
     for (auto field : op->fields) {
-      if (auto const_node = field.as<tvm::relay::ConstantNode>()) {
-        // const output node
-        CHECK(const_node);
-        VisitExpr(field);
-        CHECK(constant_.size() == 1) << "Every args expects a single constant_";
-        auto const_out = constant_[0];
-        string const_out_name = "const_output_" + to_string(buf_idx_);
-        const_out.name = const_out_name;
-        constant_list_.push_back(const_out);
-        flag_list_.push_back(CONSTANT);
-        auto const_shape = GetShape(field->checked_type());
-        buf_idx_++;
-
-        std::ostringstream buf;
-        buf << "struct csi_tensor *" << const_out_name << " = csi_alloc_tensor(sess)";
-        PushDeclLine(buf);
-        buf << const_out_name << "->data = params_base + " << to_string(constant_offset);
-        PushDeclLine(buf);
-        constant_offset += const_out.size;
-        SetDim(const_out_name, const_shape);
-
-        buf_decl_.push_back(buf.str());
-
-        auto type_node = field->checked_type().as<TensorTypeNode>();
-        CHECK(type_node);
-
-        int out_size = 1;
-        for (size_t i = 0; i < const_shape.size(); i++) {
-          out_size *= const_shape[i];
-        }
-        Output output;
-        output.dtype = "float";
-        output.name = const_out_name;
-        output.size = out_size;
-        output.is_const = true;
-        output.shape = const_shape;
-        output.call = NULL;
-        output_list_.push_back(output);
+      auto const_node = field.as<tvm::relay::ConstantNode>();
+      if (const_node) {
+        CHECK(0) << "Unsupport constant output\n";
       } else {
         auto call_node = field.as<tvm::relay::CallNode>();
         CHECK(call_node);
@@ -400,14 +363,11 @@ string CodegenCSINN::replace(string a) {
   return new_name;
 }
 
-QuantParams* CodegenCSINN::GetIntegralQuantParams(QuantParams* q_params, int32_t tensor_type,
-                                                  QConfig_* quantize_cfg) {
-  if (quantize_cfg == NULL) {
-    quantize_cfg = cfg;
-  }
-  if (q_params->q_size == 1) {
+QuantParams* CodegenCSINN::GetIntegralQuantParams(QuantParams* q_params, int32_t tensor_type) {
+  if (q_params->value_type == USE_SCALE) {
     return q_params;
   }
+
   Qinfo* qinfo = q_params->qinfo;
   float min_value = qinfo[0].min;
   float max_value = qinfo[0].max;
@@ -415,7 +375,7 @@ QuantParams* CodegenCSINN::GetIntegralQuantParams(QuantParams* q_params, int32_t
     min_value = std::min(qinfo[i].min, min_value);
     max_value = std::max(qinfo[i].max, max_value);
   }
-  QuantParams* ret = GetQuantParamsBase(min_value, max_value, tensor_type, quantize_cfg);
+  QuantParams* ret = GetQuantParamsBase(min_value, max_value, tensor_type, cfg);
   ret->q_size = 1;
   return ret;
 }
@@ -561,14 +521,12 @@ void CodegenCSINN::Axis3Cast(CSIConstant* data, CSIConstant* output, Qinfo* q_in
 
 // for per-axis (per-channel) quantize kernel
 CSIConstant* CodegenCSINN::CastParams(CSIConstant* data, string target_dtype,
-                                      QuantParams quant_params, bool depthwise_kernel) {
-  Qinfo* q_infos = quant_params.qinfo;
-  int q_size = quant_params.q_size;
+                                      QuantParams* quant_params, bool depthwise_kernel) {
+  Qinfo* q_infos = quant_params->qinfo;
+  int q_size = quant_params->q_size;
 
   CSIConstant* output = new CSIConstant();
   if (data->dtype == target_dtype || target_dtype == "float") {
-    constant_list_.push_back(*data);
-    flag_list_.push_back(CONSTANT);
     return data;
   } else {
     float* input_data = GetFloatData(data);
@@ -646,8 +604,6 @@ CSIConstant* CodegenCSINN::CastParams(CSIConstant* data, string target_dtype,
     }
     free(input_data);
   }
-  constant_list_.push_back(*output);
-  flag_list_.push_back(CONSTANT);
   return output;
 }
 
@@ -655,8 +611,6 @@ CSIConstant* CodegenCSINN::CastParams(CSIConstant* data, string target_dtype,
                                       QuantParams integral_input_quant,
                                       QuantParams kernel_quant_params) {
   if (data->dtype == target_dtype) {
-    constant_list_.push_back(*data);
-    flag_list_.push_back(CONSTANT);
     return data;
   }
   float* input_data = reinterpret_cast<float*>(data->data_buf);
@@ -728,80 +682,65 @@ CSIConstant* CodegenCSINN::CastParams(CSIConstant* data, string target_dtype,
   } else {
     LOG(ERROR) << "get error dtype:" << target_dtype;
   }
-  constant_list_.push_back(*output);
-  flag_list_.push_back(CONSTANT);
   return output;
 }
 
 void CodegenCSINN::EmitHeader(void) {
   std::ostringstream t0;
-  PrintOneLine(code_stream_, "#include <csi_nn.h>");
-  PrintNewLine(code_stream_);
+  func_def_.OneLine("#include <csi_nn.h>");
+  func_def_.NewLine();
 }
 
 void CodegenCSINN::EmitVersion(void) {
   std::ostringstream t0;
   t0 << "/* auto generate by HHB_VERSION " << HHB_VERSION << " */";
-  PrintOneLine(code_stream_, t0);
-  PrintNewLine(code_stream_);
+  func_def_.OneLine(t0);
+  func_def_.NewLine();
 }
 
 void CodegenCSINN::EmitSessionSetup(void) {
   std::ostringstream t0;
   t0 << "void *" << ext_func_id_ << "_(";
   t0 << "char *params_base) {";
-  PrintOneLine(code_stream_, t0);
-  EnterScope();
+  func_def_.OneLine(t0);
+  func_def_.EnterScope();
 
-  PrintOneLine(code_stream_, "struct csi_session *sess = csi_alloc_session();");
+  func_def_.OneLine("struct csinn_session *sess = csinn_alloc_session();");
   SessionRunMode();
   ModelBinarySave();
   t0 << "sess->base_api = " << target_name_ << ";";
-  PrintOneLine(code_stream_, t0);
+  func_def_.OneLine(t0);
   t0 << "sess->base_dtype = " << base_dtype_ << ";";
-  PrintOneLine(code_stream_, t0);
+  func_def_.OneLine(t0);
   if (debug_level_ == "INFO") {
-    PrintOneLine(code_stream_, "sess->debug_level = CSI_DEBUG_LEVEL_INFO;");
+    func_def_.OneLine("sess->debug_level = CSINN_DEBUG_LEVEL_INFO;");
   }
-  PrintOneLine(code_stream_, "csi_session_init(sess);");
+  func_def_.OneLine("csinn_session_init(sess);");
 
-  t0 << "csi_set_input_number(" << ext_func_args_.size() << ", sess);";
-  PrintOneLine(code_stream_, t0);
-  t0 << "csi_set_output_number(" << output_list_.size() << ", sess);";
-  PrintOneLine(code_stream_, t0);
-  // Function body
-  PrintNewLine(code_stream_);
-  for (auto decl : buf_decl_) {
-    PrintOneLine(code_stream_, decl);
-  }
-  PrintNewLine(code_stream_);
+  t0 << "csinn_set_input_number(" << ext_func_args_.size() << ", sess);";
+  func_def_.OneLine(t0);
+  t0 << "csinn_set_output_number(" << output_list_.size() << ", sess);";
+  func_def_.OneLine(t0);
+
+  func_def_.NewLine();
   for (uint32_t i = 0; i < ext_func_args_.size(); i++) {
-    std::string new_name = CodegenCSINN::replace(ext_func_args_[i]->name_hint());
-    auto iter = io_nodes.find(new_name);
-    if (iter == io_nodes.end()) {
-      CHECK(0);
-    }
-    QuantParams q_params = iter->second;
-    string in_name = q_params.name;
+    std::string in_name = CodegenCSINN::replace(ext_func_args_[i]->name_hint());
     std::ostringstream t1;
-    t1 << "csi_set_tensor_entry(" << in_name << ", sess);\n";
-    PrintIndents(t1);
-    t1 << "csi_set_input(" << i << ", " << in_name << ", sess);";
-    PrintOneLine(code_stream_, t1);
+    t1 << "csinn_set_tensor_entry(" << in_name << ", sess)";
+    func_def_.PushDecl(t1);
+    t1 << "csinn_set_input(" << i << ", " << in_name << ", sess)";
+    func_def_.PushDecl(t1);
   }
 
-  PrintNewLine(code_stream_);
-  for (auto stmt : ext_func_body) {
-    PrintOneLine(code_stream_, stmt);
-  }
+  func_def_.BufToCode();
 
   int output_index = 0;
   // emit normal outputs
   for (uint32_t i = 0; i < output_list_.size(); i++) {
     if (!output_list_[i].is_const) {
       string output_name = output_list_[i].name;
-      t0 << "csi_set_output(" << output_index++ << ", " << output_name << ", sess);";
-      PrintOneLine(code_stream_, t0);
+      t0 << "csinn_set_output(" << output_index++ << ", " << output_name << ", sess);";
+      func_def_.OneLine(t0);
     }
   }
 
@@ -810,21 +749,21 @@ void CodegenCSINN::EmitSessionSetup(void) {
     if (output_list_[i].is_const) {
       t0 << output_list_[i].name << "->name = "
          << "\"" << output_list_[i].name << "\";";
-      PrintOneLine(code_stream_, t0);
+      func_def_.OneLine(t0);
       t0 << output_list_[i].name << "->dtype = CSINN_DTYPE_FLOAT32;";
-      PrintOneLine(code_stream_, t0);
+      func_def_.OneLine(t0);
       t0 << output_list_[i].name << "->is_const = 1;";
-      PrintOneLine(code_stream_, t0);
-      t0 << "csi_set_output(" << output_index++ << ", " << output_list_[i].name << ", sess);";
-      PrintOneLine(code_stream_, t0);
+      func_def_.OneLine(t0);
+      t0 << "csinn_set_output(" << output_index++ << ", " << output_list_[i].name << ", sess);";
+      func_def_.OneLine(t0);
     }
   }
 
-  PrintNewLine(code_stream_);
-  PrintOneLine(code_stream_, "csi_session_setup(sess);");
-  PrintOneLine(code_stream_, "return sess;");
-  ExitScope();
-  PrintOneLine(code_stream_, "}");
+  func_def_.NewLine();
+  func_def_.OneLine("csinn_session_setup(sess);");
+  func_def_.OneLine("return sess;");
+  func_def_.ExitScope();
+  func_def_.OneLine("}");
 }
 
 void CodegenCSINN::EmitSessionRun(void) {
@@ -838,20 +777,20 @@ void CodegenCSINN::EmitSessionRun(void) {
     }
   }
   t0 << ", void *sess) {";
-  PrintOneLine(code_stream_, t0);
-  EnterScope();
+  func_def_.OneLine(t0);
+  func_def_.EnterScope();
 
-  PrintOneLine(code_stream_, "struct csi_tensor input_tensor;");
+  func_def_.OneLine("struct csinn_tensor input_tensor;");
   for (uint32_t i = 0; i < ext_func_args_.size(); i++) {
     t0 << "input_tensor.data = data" << to_string(i) << ";";
-    PrintOneLine(code_stream_, t0);
-    t0 << "csi_update_input(" << to_string(i) << ", "
+    func_def_.OneLine(t0);
+    t0 << "csinn_update_input(" << to_string(i) << ", "
        << "&input_tensor, sess);";
-    PrintOneLine(code_stream_, t0);
+    func_def_.OneLine(t0);
   }
-  PrintOneLine(code_stream_, "csi_session_run(sess);");
-  ExitScope();
-  PrintOneLine(code_stream_, "}");
+  func_def_.OneLine("csinn_session_run(sess);");
+  func_def_.ExitScope();
+  func_def_.OneLine("}");
 }
 
 void CodegenCSINN::EmitNBGSetup(void) {
@@ -867,10 +806,10 @@ void CodegenCSINN::EmitNBGSetup(void) {
       }
       QuantParams q_params = iter->second;
       std::ostringstream t0;
-      t0 << "csi_set_tensor_entry(" << output_name << ", sess);";
+      t0 << "csinn_set_tensor_entry(" << output_name << ", sess);";
       nbg_func_.push_back(t0.str());
       t0.str("");
-      t0 << "csi_set_output(" << output_index++ << ", " << output_name << ", sess);";
+      t0 << "csinn_set_output(" << output_index++ << ", " << output_name << ", sess);";
       nbg_func_.push_back(t0.str());
     }
   }
@@ -880,48 +819,50 @@ void CodegenCSINN::EmitNBGSetup(void) {
     QuantParams q_params = iter->second;
     string in_name = q_params.name;
     std::ostringstream t0;
-    t0 << "csi_set_tensor_entry(" << in_name << ", sess);";
+    t0 << "csinn_set_tensor_entry(" << in_name << ", sess);";
     nbg_func_.push_back(t0.str());
 
     t0.str("");
-    t0 << "csi_set_input(" << i << ", " << in_name << ", sess);";
+    t0 << "csinn_set_input(" << i << ", " << in_name << ", sess);";
     nbg_func_.push_back(t0.str());
   }
   // codegen for binary graph function
-  PrintNewLine(code_stream_);
+  func_def_.NewLine();
   t0 << "void *csinn_nbg(char *path) {";
-  PrintOneLine(code_stream_, t0);
-  EnterScope();
+  func_def_.OneLine(t0);
+  func_def_.EnterScope();
 
   // function body
-  PrintOneLine(code_stream_, "struct csi_session *sess = csi_alloc_session();");
+  func_def_.OneLine("struct csinn_session *sess = csinn_alloc_session();");
   t0 << "sess->base_api = " << target_name_ << ";";
-  PrintOneLine(code_stream_, t0);
+  func_def_.OneLine(t0);
   t0 << "sess->base_dtype = " << base_dtype_ << ";";
-  PrintOneLine(code_stream_, t0);
-  PrintOneLine(code_stream_, "csi_session_init(sess);");
+  func_def_.OneLine(t0);
+  func_def_.OneLine("csinn_session_init(sess);");
 
-  t0 << "csi_set_input_number(" << ext_func_args_.size() << ", sess);";
-  PrintOneLine(code_stream_, t0);
-  t0 << "csi_set_output_number(" << output_index << ", sess);";
-  PrintOneLine(code_stream_, t0);
+  t0 << "csinn_set_input_number(" << ext_func_args_.size() << ", sess);";
+  func_def_.OneLine(t0);
+  t0 << "csinn_set_output_number(" << output_index << ", sess);";
+  func_def_.OneLine(t0);
 
-  PrintNewLine(code_stream_);
+  func_def_.NewLine();
   std::map<string, QuantParams>::iterator iter;
   for (iter = io_nodes.begin(); iter != io_nodes.end(); iter++) {
     CreateGraphTensor(iter->second);
   }
 
   for (auto decl : nbg_func_) {
-    PrintOneLine(code_stream_, decl);
+    func_def_.OneLine(decl);
   }
 
-  t0 << "csi_load_binary_model(path, sess);";
-  PrintOneLine(code_stream_, t0);
-  PrintOneLine(code_stream_, "return sess;");
+  t0 << "sess->model.bm_path = path;";
+  func_def_.OneLine(t0);
+  t0 << "csinn_load_binary_model(sess);";
+  func_def_.OneLine(t0);
+  func_def_.OneLine("return sess;");
 
-  ExitScope();
-  PrintOneLine(code_stream_, "}");
+  func_def_.ExitScope();
+  func_def_.OneLine("}");
 }
 
 string CodegenCSINN::EmitGraph(void) {
@@ -931,29 +872,42 @@ string CodegenCSINN::EmitGraph(void) {
   EmitSessionRun();
   EmitNBGSetup();
   DumpConstant();
-  return code_stream_.str();
+  return func_def_.str();
 }
 
-void CodegenCSINN::SetDim(string name, std::vector<int> shape) {
+void CodegenCSINN::SetConstDim(string name, std::vector<int> shape) {
   std::ostringstream t0;
   if (shape.size() == 0) {
     t0 << name << "->dim[" << 0 << "] = 1";
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
     t0 << name << "->dim_count = 1";
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
     return;
   }
   for (size_t i = 0; i < shape.size(); i++) {
     t0 << name << "->dim[" << i << "] = " << shape[i];
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
   }
   t0 << name << "->dim_count = " << shape.size();
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
+}
+
+void CodegenCSINN::SetDim(CSINNTensor* t, string name, std::vector<int> shape) {
+  std::ostringstream t0;
+  if (shape.size() == 0) {
+    t->tensor->dim_count = 1;
+    t->tensor->dim[0] = 1;
+    return;
+  }
+  for (size_t i = 0; i < shape.size(); i++) {
+    t->tensor->dim[i] = shape[i];
+  }
+  t->tensor->dim_count = shape.size();
 }
 
 void CodegenCSINN::CreateGraphTensor(QuantParams q_params) {
   std::ostringstream t0;
-  t0 << "struct csi_tensor *" << q_params.name << " = csi_alloc_tensor(sess);\n";
+  t0 << "struct csinn_tensor *" << q_params.name << " = csinn_alloc_tensor(sess);\n";
   for (uint32_t i = 0; i < q_params.shape.size(); i++) {
     t0 << "  " << q_params.name << "->dim[" << to_string(i)
        << "] = " << to_string(q_params.shape[i]) << ";\n";
@@ -991,140 +945,130 @@ void CodegenCSINN::CreateGraphTensor(QuantParams q_params) {
   }
   t0 << "  " << q_params.name << "->dtype = " << io_dtype << ";\n";
   t0 << "  " << q_params.name << "->layout = " << GetCSINNActLayout(q_params.shape) << ";\n";
-  PrintOneLine(code_stream_, t0);
+  func_def_.OneLine(t0);
 }
 
-void CodegenCSINN::CreateConstantTensorBase(string name, size_t size, std::vector<int> shape,
-                                            string target_dtype, string layout) {
-  std::ostringstream t0;
-  t0 << "struct csi_tensor *" << name << " = csi_alloc_tensor(sess)";
-  PushDeclLine(t0);
-  t0 << name << "->data = params_base + " << to_string(constant_offset);
-  PushDeclLine(t0);
-  t0 << name << "->name = "
-     << "\"" << name << "\"";
-  PushDeclLine(t0);
-  t0 << name << "->is_const = 1";
-  PushDeclLine(t0);
-  t0 << name << "->dtype = " << GetCSINNDtype(target_dtype);
-  PushDeclLine(t0);
-  // if (shape.size() == 0) shape.push_back(1);
-  t0 << name << "->layout = " << layout;
-  PushDeclLine(t0);
+CSINNConstantTensor* CodegenCSINN::CreateConstantTensorBase(string name, size_t size,
+                                                            std::vector<int> shape,
+                                                            string target_dtype, int32_t layout) {
+  CSINNConstantTensor* tensor = new CSINNConstantTensor;
+  tensor->name = name.c_str();
+  SetDim(tensor, name, shape);
+  tensor->const_offset = constant_offset;
+  tensor->tensor->dtype = GetCSINNTensorDtype(target_dtype);
+  tensor->tensor->layout = layout;
+  tensor->tensor->is_const = 1;
+
   constant_offset += size;
-
-  SetDim(name, shape);
+  return tensor;
 }
 
-void CodegenCSINN::CreateConstantTensor(CSIConstant* data, string name, std::vector<int> shape,
-                                        string target_dtype, QuantParams quant_params,
-                                        bool depthwise_kernel, bool is_bias) {
+void CodegenCSINN::CreateConstantTensor(CSINNOP* op, CSIConstant* data, string name,
+                                        std::vector<int> shape, string target_dtype,
+                                        QuantParams quant_params, bool depthwise_kernel,
+                                        bool is_bias) {
   float* input_data = reinterpret_cast<float*>(data->data_buf);
   if (is_bias && shape.size() == 0 && std::abs(input_data[0]) < 1e-5) {
     // no bias
     std::ostringstream t0;
-    t0 << "struct csi_tensor *" << name << " = csi_alloc_tensor(sess)";
-    PushDeclLine(t0);
+    t0 << "struct csinn_tensor *" << name << " = csinn_alloc_tensor(sess)";
+    func_def_.PushDecl(t0);
     t0 << name << "->data = NULL";
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
     t0 << name << "->name = "
        << "\"" << name << "\"";
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
     t0 << name << "->is_const = 1";
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
     t0 << name << "->dim_count = 0";
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
   } else {
-    CSIConstant* data_cast = CastParams(data, target_dtype, quant_params, depthwise_kernel);
     std::ostringstream t0;
-    string constant_layout = "";
+    int32_t constant_layout;
     if (depthwise_kernel) {
       if (layout_ == "NCHW") {
-        constant_layout = "CSINN_LAYOUT_O1HW";
+        constant_layout = CSINN_LAYOUT_O1HW;
       } else {
-        constant_layout = "CSINN_LAYOUT_1HWO";
+        constant_layout = CSINN_LAYOUT_1HWO;
       }
     } else {
-      constant_layout = GetCSINNWeightLayout(shape);
+      constant_layout = GetCSINNTensorWeightLayout(shape);
     }
-    CreateConstantTensorBase(name, data_cast->size, shape, target_dtype, constant_layout);
-    t0 << name << "->qinfo = (struct csi_quant_info *)(params_base + " << to_string(constant_offset)
-       << ")";
-    PushDeclLine(t0);
-    t0 << name << "->quant_channel = " << double_to_string(quant_params.q_size);
-    PushDeclLine(t0);
-    constant_offset += quant_params.q_size * sizeof(Qinfo);
-    quant_params.name = name;
+    quant_params.shape = shape;
+    data->layout = constant_layout;
+    CSIConstant* data_cast = CastParams(data, target_dtype, &quant_params, depthwise_kernel);
+    CSINNConstantTensor* ret = CreateConstantTensorBase(name, data_cast->size, quant_params.shape,
+                                                        target_dtype, constant_layout);
+    ret->tensor->quant_channel = quant_params.q_size;
+    ret->qinfo_offset = constant_offset;
+    ret->set_const(data_cast);
+    ret->set_quant(quant_params);
+    /* for light_new */
     qinfo_list_.push_back(quant_params);
-    flag_list_.push_back(QINFO);
+    op->push_constant(ret);
   }
 }
 
-void CodegenCSINN::CreateConstantTensor(CSIConstant* data, string name, std::vector<int> shape,
-                                        string target_dtype, QuantParams input_quant_params,
+void CodegenCSINN::CreateConstantTensor(CSINNOP* op, CSIConstant* data, string name,
+                                        std::vector<int> shape, string target_dtype,
+                                        QuantParams input_quant_params,
                                         QuantParams kernel_quant_params,
                                         QuantParams bias_quant_params) {
   float* input_data = reinterpret_cast<float*>(data->data_buf);
   if (shape.size() == 0 && std::abs(input_data[0]) < 1e-5) {
     // no bias
     std::ostringstream t0;
-    t0 << "struct csi_tensor *" << name << " = csi_alloc_tensor(sess)";
-    PushDeclLine(t0);
+    t0 << "struct csinn_tensor *" << name << " = csinn_alloc_tensor(sess)";
+    func_def_.PushDecl(t0);
     t0 << name << "->data = NULL";
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
     t0 << name << "->name = "
        << "\"" << name << "\"";
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
     t0 << name << "->is_const = 1";
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
     t0 << name << "->dim_count = 0";
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
   } else {
     QuantParams* integral_input_quant = GetIntegralQuantParams(&input_quant_params, ACTIVATE);
     CSIConstant* data_cast =
         CastParams(data, target_dtype, *integral_input_quant, kernel_quant_params);
     std::ostringstream t0;
-    string layout = GetCSINNWeightLayout(shape);
-    CreateConstantTensorBase(name, data_cast->size, shape, target_dtype, layout);
+    int32_t layout = GetCSINNTensorWeightLayout(shape);
+    CSINNConstantTensor* ret =
+        CreateConstantTensorBase(name, data_cast->size, shape, target_dtype, layout);
     for (int i = 0; i < bias_quant_params.q_size; i++) {
       bias_quant_params.qinfo[i].scale =
           integral_input_quant->qinfo->scale * kernel_quant_params.qinfo[i].scale;
       bias_quant_params.qinfo[i].zero_point = 0;
     }
-    t0 << name << "->qinfo = (struct csi_quant_info *)(params_base + " << to_string(constant_offset)
-       << ")";
-    PushDeclLine(t0);
-    t0 << name << "->quant_channel = " << double_to_string(bias_quant_params.q_size);
-    PushDeclLine(t0);
-    constant_offset += bias_quant_params.q_size * sizeof(Qinfo);
+
+    ret->tensor->quant_channel = bias_quant_params.q_size;
+    ret->qinfo_offset = constant_offset;
+    ret->set_const(data_cast);
+    ret->set_quant(bias_quant_params);
+    op->push_constant(ret);
     bias_quant_params.name = name;
+    /* for light_new */
     qinfo_list_.push_back(bias_quant_params);
-    flag_list_.push_back(QINFO);
   }
 }
 
-void CodegenCSINN::CreateTensor(string name, string data, std::vector<int> shape,
-                                QuantParams quant_params, string dtype) {
-  std::ostringstream t0;
-  t0 << "struct csi_tensor *" << name << " = csi_alloc_tensor(sess)";
-  PushDeclLine(t0);
+CSINNVarTensor* CodegenCSINN::CreateTensor(string name, string data, std::vector<int> shape,
+                                           QuantParams quant_params, string dtype) {
+  CSINNVarTensor* tensor = new CSINNVarTensor;
+  tensor->name = name.c_str();
+  SetDim(tensor, name, shape);
+  tensor->tensor->quant_channel = quant_params.q_size;
+  tensor->qinfo_offset = constant_offset;
+  tensor->tensor->dtype = GetCSINNTensorDtype(dtype);
+  tensor->tensor->layout = GetCSINNTensorActLayout(shape);
+
   tensor_data[name] = data;
-  t0 << name << "->name = "
-     << "\"" << name << "\"";
-  PushDeclLine(t0);
-  t0 << name << "->dtype = " << GetCSINNDtype(dtype);
-  PushDeclLine(t0);
-  t0 << name << "->layout = " << GetCSINNActLayout(shape);
-  PushDeclLine(t0);
-  SetDim(name, shape);
-  t0 << name << "->qinfo = (struct csi_quant_info *)(params_base + " << to_string(constant_offset)
-     << ")";
-  PushDeclLine(t0);
-  t0 << name << "->quant_channel = " << to_string(quant_params.q_size);
-  PushDeclLine(t0);
-  constant_offset += quant_params.q_size * sizeof(Qinfo);
+  tensor->set_quant(quant_params);
+  /* for light_new */
   qinfo_list_.push_back(quant_params);
-  flag_list_.push_back(QINFO);
+  return tensor;
 }
 
 Output CodegenCSINN::GetRealInput(const CallNode* call) {
@@ -1157,7 +1101,7 @@ void CodegenCSINN::PushInput(string name, const CallNode* call) {
   }
 }
 
-string CodegenCSINN::InputTensorCall(const CallNode* pre_call, int input_index,
+string CodegenCSINN::InputTensorCall(CSINNOP* op, const CallNode* pre_call, int input_index,
                                      QuantParams quant_params, string dtype) {
   auto ishape = GetShape(pre_call->checked_type());
   auto input = out_[0];
@@ -1171,13 +1115,14 @@ string CodegenCSINN::InputTensorCall(const CallNode* pre_call, int input_index,
     return input.name;
   } else {
     string input_name = "input" + to_string(input_index) + "_" + to_string(buf_idx_);
-    CreateTensor(input_name, input.name, ishape, quant_params, dtype);
+    CSINNVarTensor* ret = CreateTensor(input_name, input.name, ishape, quant_params, dtype);
+    op->push_input(ret);
     quant_params.name = input_name;
     return input_name;
   }
 }
 
-string CodegenCSINN::InputTensorVar(const VarNode* pre_var, int input_index,
+string CodegenCSINN::InputTensorVar(CSINNOP* op, const VarNode* pre_var, int input_index,
                                     QuantParams quant_params, string dtype) {
   auto ishape = GetShape(pre_var->checked_type());
   auto input = out_[0];
@@ -1189,15 +1134,16 @@ string CodegenCSINN::InputTensorVar(const VarNode* pre_var, int input_index,
   }
 
   if (io_nodes.end() != io_nodes.find(var_name)) {
-    return io_nodes[var_name].name;
+    return var_name;
   } else {
     string input_name = "input" + to_string(input_index) + "_" + to_string(buf_idx_);
     quant_params.name = input_name;
     quant_params.offset = constant_offset;
     quant_params.shape = ishape;
     io_nodes[var_name] = quant_params;
-    CreateTensor(input_name, "__" + input.name, ishape, quant_params, dtype);
-    return input_name;
+    CSINNVarTensor* ret = CreateTensor(var_name, "__" + input.name, ishape, quant_params, dtype);
+    op->push_input(ret);
+    return var_name;
   }
 }
 
@@ -1215,13 +1161,13 @@ string CodegenCSINN::InputTensorTupleItem(const TupleGetItemNode* pre_call,
   return input_name;
 }
 
-string CodegenCSINN::InputTensorName(const CallNode* call, int input_index,
+string CodegenCSINN::InputTensorName(CSINNOP* op, const CallNode* call, int input_index,
                                      QuantParams quant_params, string dtype) {
   string input_name;
   if (auto pre_call = call->args[input_index].as<CallNode>()) {
-    input_name = InputTensorCall(pre_call, input_index, quant_params, dtype);
+    input_name = InputTensorCall(op, pre_call, input_index, quant_params, dtype);
   } else if (auto pre_var = call->args[input_index].as<VarNode>()) {
-    input_name = InputTensorVar(pre_var, input_index, quant_params, dtype);
+    input_name = InputTensorVar(op, pre_var, input_index, quant_params, dtype);
   } else {
     auto pre_call = call->args[input_index].as<TupleGetItemNode>();
     CHECK(pre_call);
@@ -1230,17 +1176,17 @@ string CodegenCSINN::InputTensorName(const CallNode* call, int input_index,
   return input_name;
 }
 
-string CodegenCSINN::InputTensor(std::ostringstream& decl, const CallNode* call, int input_index,
-                                 QuantParams quant_params, string dtype) {
-  string input_name = InputTensorName(call, input_index, quant_params, dtype);
+string CodegenCSINN::InputTensor(CSINNOP* op, std::ostringstream& decl, const CallNode* call,
+                                 int input_index, QuantParams quant_params, string dtype) {
+  string input_name = InputTensorName(op, call, input_index, quant_params, dtype);
   decl << input_name;
   return input_name;
 }
 
 void CodegenCSINN::setup_callback(std::ostringstream& decl, string op_name, string params_name) {
   std::ostringstream t0;
-  t0 << "csi_" << op_name << "_init" << decl.str();
-  PushDeclLine(t0);
+  t0 << "csinn_" << op_name << "_init" << decl.str();
+  func_def_.PushDecl(t0);
 }
 
 void CodegenCSINN::params_common_setup(std::ostringstream& decl, const CallNode* call,
@@ -1249,17 +1195,36 @@ void CodegenCSINN::params_common_setup(std::ostringstream& decl, const CallNode*
   std::ostringstream t0;
   if (!(layout_ == "NCHW" && layout == "CSINN_LAYOUT_NCHW")) {
     t0 << params_name << "->base.layout = CSINN_LAYOUT_" << layout_;
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
   }
+
+  string complete_name = get_complete_layer_name(op_name, layer_name);
   t0 << params_name << "->base.name = "
-     << "\"" << get_complete_layer_name(op_name, layer_name) << "\"";
+     << "\"" << complete_name << "\"";
   params_idx_++;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
+
+  bool is_layer_hybrid = is_contain_item<string>(hybrid_layer_name, complete_name);
+  if (is_layer_hybrid) {
+    if (hybrid_cfg->quantization_scheme != "unset" &&
+        hybrid_cfg->quantization_scheme != "CSINN_QUANT_INT4_ASYM_W_SYM" &&
+        hybrid_cfg->quantization_scheme != "CSINN_QUANT_INT8_ASYM_W_SYM") {
+      t0 << params_name << "->base.quant_type = " << hybrid_cfg->quantization_scheme;
+      func_def_.PushDecl(t0);
+    }
+  } else {
+    if (cfg->quantization_scheme != "unset" &&
+        cfg->quantization_scheme != "CSINN_QUANT_INT4_ASYM_W_SYM" &&
+        cfg->quantization_scheme != "CSINN_QUANT_INT8_ASYM_W_SYM" && !hybrid_layer_name.empty()) {
+      t0 << params_name << "->base.quant_type = " << cfg->quantization_scheme;
+      func_def_.PushDecl(t0);
+    }
+  }
   setup_callback(decl, op_name, params_name);
   CreateTensorSessData();
 }
 
-string CodegenCSINN::OutputTensor(std::ostringstream& decl, const CallNode* call,
+string CodegenCSINN::OutputTensor(CSINNOP* op, std::ostringstream& decl, const CallNode* call,
                                   QuantParams quant_params, string dtype) {
   auto type_node = call->checked_type().as<TensorTypeNode>();
   CHECK(type_node);
@@ -1272,7 +1237,8 @@ string CodegenCSINN::OutputTensor(std::ostringstream& decl, const CallNode* call
   quant_params.name = output_name;
   quant_params.offset = constant_offset;
   quant_params.shape = out_shape;
-  CreateTensor(output_name, "alloc", out_shape, quant_params, dtype);
+  CSINNVarTensor* ret = CreateTensor(output_name, "alloc", out_shape, quant_params, dtype);
+  op->push_output(ret);
   decl << ", " << output_name;
   int out_index = CheckOutput(call);
   if (out_index > -1) {
@@ -1281,8 +1247,8 @@ string CodegenCSINN::OutputTensor(std::ostringstream& decl, const CallNode* call
   return output_name;
 }
 
-string CodegenCSINN::DataConvertTensor(std::vector<int> shape, QuantParams quant_params,
-                                       string dtype) {
+string CodegenCSINN::DataConvertTensor(CSINNOP* op, std::vector<int> shape,
+                                       QuantParams quant_params, string dtype) {
   // if output is a single number, out_shape.size() here is zero
   if (shape.size() == 0) {
     shape.push_back(1);
@@ -1292,80 +1258,15 @@ string CodegenCSINN::DataConvertTensor(std::vector<int> shape, QuantParams quant
   quant_params.offset = constant_offset;
   quant_params.shape = shape;
   // string alloc_buffer_name = "hybrid_alloc" + to_string(buf_idx_);
-  CreateTensor(output_name, "hybrid_alloc", shape, quant_params, dtype);
+  CSINNVarTensor* ret = CreateTensor(output_name, "hybrid_alloc", shape, quant_params, dtype);
+  op->push_output(ret);
   // decl << ", " << output_name;
   return output_name;
 }
 
-void CodegenCSINN::DumpConstant() {
-  std::ofstream params;
-  params.open(params_path_, std::ios::out | std::ios::binary);
-  int q_count = 0;
-  int c_count = 0;
-  CHECK(flag_list_.size() == qinfo_list_.size() + constant_list_.size());
-  for (uint i = 0; i < flag_list_.size(); i++) {
-    if (flag_list_[i] == QINFO) {
-      params.write(reinterpret_cast<char*>(qinfo_list_[q_count].qinfo),
-                   qinfo_list_[q_count].q_size * sizeof(Qinfo));
-      q_count++;
-    } else if (flag_list_[i] == CONSTANT) {
-      params.write(reinterpret_cast<char*>(constant_list_[c_count].data_buf),
-                   constant_list_[c_count].size);
-      c_count++;
-    }
-  }
-  params.close();
-  if (debug_level_ == "INFO") {
-    std::ofstream qinfo_file;
-    std::ofstream const_file;
-    qinfo_file.open("./hhb_debug_qinfo.h", std::ios::out);
-    const_file.open("./hhb_debug_const.h", std::ios::out);
-    int q_count = 0;
-    int c_count = 0;
-    CHECK(flag_list_.size() == qinfo_list_.size() + constant_list_.size());
-    for (uint i = 0; i < flag_list_.size(); i++) {
-      if (flag_list_[i] == QINFO) {
-        qinfo_file << "qinfo " << qinfo_list_[q_count].name << " = {\n";
-        qinfo_file << "// size: " << qinfo_list_[q_count].q_size << "\n";
-        struct Qinfo* qinfo = qinfo_list_[q_count].qinfo;
-        for (int i = 0; i < qinfo_list_[q_count].q_size; i++) {
-          qinfo_file << "zero_point = " << qinfo[i].zero_point << ", ";
-          qinfo_file << "scale = " << qinfo[i].scale << ", ";
-          qinfo_file << "multiplier = " << qinfo[i].multiplier << ", ";
-          qinfo_file << "shift = " << qinfo[i].shift << ", ";
-          qinfo_file << "min = " << qinfo[i].min << ", ";
-          qinfo_file << "max = " << qinfo[i].max << "\n";
-        }
-        qinfo_file << "}\n";
-        q_count++;
-      } else if (flag_list_[i] == CONSTANT) {
-        const_file << "constant data " << constant_list_[c_count].name << " = {\n";
+void CodegenCSINN::DumpConstant() { bm_graph.dump_params(params_path_); }
 
-        if (constant_list_[c_count].dtype == "float") {
-          float* data_buf = static_cast<float*>(constant_list_[c_count].data_buf);
-          for (uint i = 0; i < constant_list_[c_count].size / 4; i++) {
-            const_file << data_buf[i] << ", ";
-            if (i % 16 == 15) {
-              const_file << "\n";
-            }
-          }
-        } else {
-          uint8_t* data_buf = static_cast<uint8_t*>(constant_list_[c_count].data_buf);
-          for (uint i = 0; i < constant_list_[c_count].size; i++) {
-            const_file << "0x" << std::hex << static_cast<int>(data_buf[i]) << ", ";
-            if (i % 16 == 15) {
-              const_file << "\n";
-            }
-          }
-        }
-        const_file << "}\n";
-        c_count++;
-      }
-    }
-    qinfo_file.close();
-    const_file.close();
-  }
-}
+void CodegenCSINN::DumpGraphInfo() { bm_graph.dump_graph_info(graph_info_path_); }
 
 int CodegenCSINN::CheckOutput(const CallNode* call) {
   for (uint i = 0; i < output_list_.size(); i++) {
@@ -1440,8 +1341,36 @@ void CodegenCSINN::PushOutput(std::vector<string> names, const CallNode* call) {
   out_list_.push_back(output);
 }
 
-QuantParams* CodegenCSINN::GetQuantParams(Array<Array<IndexExpr>> q_params,
-                                          QConfig_* quantize_cfg) {
+bool CodegenCSINN::IsIntegralOrNot(string const_kind) {
+  std::vector<string> per_channel = {"conv_kernel", "depthwise_kernel", "conv_bias",
+                                     "depthwise_bias"};
+  if ((cfg->quantization_scheme == "CSINN_QUANT_INT8_ASYM_W_SYM" ||
+       cfg->quantization_scheme == "CSINN_QUANT_INT4_ASYM_W_SYM") &&
+      !is_contain_item<string>(per_channel, const_kind)) {
+    return true;
+  }
+  return false;
+}
+
+std::vector<string> split_string(string str, string pattern) {
+  std::string::size_type pos;
+  std::vector<std::string> result;
+  // extend str for process
+  str += pattern;
+  size_t size = str.size();
+  for (size_t i = 0; i < size; i++) {
+    pos = str.find(pattern, i);
+    if (pos < size) {
+      std::string s = str.substr(i, pos - i);
+      result.push_back(s);
+      i = pos + pattern.size() - 1;
+    }
+  }
+  return result;
+}
+
+QuantParams* CodegenCSINN::GetQuantParams(Array<Array<IndexExpr>> q_params, QConfig_* quantize_cfg,
+                                          string const_kind) {
   if (quantize_cfg == NULL) {
     quantize_cfg = cfg;
   }
@@ -1459,20 +1388,35 @@ QuantParams* CodegenCSINN::GetQuantParams(Array<Array<IndexExpr>> q_params,
         float max_value = q_param[start_idx + 1].as<FloatImmNode>()->value;
         out_q_params[i] = *GetQuantParamsBase(min_value, max_value, tensor_type, quantize_cfg);
         out_q_params[i].q_size = 1;
+        out_q_params[i].value_type = value_type;
       } else if (value_type == USE_SCALE) {
         float scale = q_param[start_idx].as<FloatImmNode>()->value;
         float zp = q_param[start_idx + 1].as<IntImmNode>()->value;
         out_q_params[i] = *GetQuantParamsBase(scale, zp);
         out_q_params[i].q_size = 1;
+        out_q_params[i].value_type = value_type;
       }
     } else if (q_type == PER_CHANNEL) {
+      string target_kind;
+      if (const_kind.find(";") != string::npos) {
+        target_kind = split_string(const_kind, ";")[i];
+      } else {
+        target_kind = const_kind;
+      }
+      bool is_integral = IsIntegralOrNot(target_kind);
       // flag + single channel == 3
       uint length = (q_param.size() - 3) / 2;
       out_q_params[i] = *new QuantParams();
       Qinfo* q_infos = new Qinfo[length];
       for (uint j = start_idx; j < q_param.size(); j = j + 2) {
         int index = (j - start_idx) / 2;
-        if (value_type == USE_MINMAX) {
+        if (is_integral) {
+          CHECK_EQ(value_type, USE_MINMAX);
+          q_infos[index].scale = 0.0;
+          q_infos[index].zero_point = 0;
+          q_infos[index].min = q_param[j].as<FloatImmNode>()->value;
+          q_infos[index].max = q_param[j + 1].as<FloatImmNode>()->value;
+        } else if (value_type == USE_MINMAX) {
           float min_value = q_param[j].as<FloatImmNode>()->value;
           float max_value = q_param[j + 1].as<FloatImmNode>()->value;
           QuantParams* tmp = GetQuantParamsBase(min_value, max_value, tensor_type, quantize_cfg);
@@ -1488,10 +1432,9 @@ QuantParams* CodegenCSINN::GetQuantParams(Array<Array<IndexExpr>> q_params,
       }
       out_q_params[i].qinfo = q_infos;
       out_q_params[i].q_size = length;
-      if ((cfg->quantization_scheme == "CSINN_QUANT_INT8_ASYM_W_SYM" ||
-           cfg->quantization_scheme == "CSINN_QUANT_INT4_ASYM_W_SYM") &&
-          tensor_type == ACTIVATE) {
-        out_q_params[i] = *GetIntegralQuantParams(&out_q_params[i], tensor_type);
+      out_q_params[i].value_type = value_type;
+      if (is_integral) {
+        out_q_params[i] = *GetIntegralQuantParams(&out_q_params[i], ACTIVATE);
       }
     }
   }
@@ -1554,6 +1497,9 @@ void CodegenCSINN::GetAsymScale(float min_value, float max_value, int bits, Qinf
     qinfo->zero_point =
         std::min(high_bound,
                  static_cast<int>(std::max(low_bound, std::round(-8 - min_value / qinfo->scale))));
+  } else if (cfg->dtype_input == "float") {
+    qinfo->scale = 1.0;
+    qinfo->zero_point = 0;
   } else {
     LOG(ERROR) << "get error dtype:" << cfg->dtype_input;
   }
@@ -1599,8 +1545,8 @@ QuantParams* CodegenCSINN::GetQuantParamsBase(float min_value, float max_value, 
 }
 
 template <typename T>
-void CodegenCSINN::SisoOp(std::ostringstream& decl, const CallNode* call, const T* attr,
-                          string op_name) {
+void CodegenCSINN::SisoOp(CSINNOP* op, std::ostringstream& decl, const CallNode* call,
+                          const T* attr, string op_name) {
   // QuantParams* q_params = GetQuantParams(attr->q_params);
 
   CHECK(call->args.size() == 1) << "op expects 1 args";
@@ -1613,10 +1559,12 @@ void CodegenCSINN::SisoOp(std::ostringstream& decl, const CallNode* call, const 
   CHECK(out_.size() == 1) << "Every args expects a single out_";
   string complete_name = get_complete_layer_name(op_name, attr->layer_name.c_str());
   bool is_layer_hybrid = is_contain_item(hybrid_layer_name, complete_name);
-  siso_input_name = HybridInputTensor(decl, call, 0, attr->q_params, 0, is_layer_hybrid);
+  siso_input_name = HybridInputTensor(op, decl, call, 0, attr->q_params, 0, is_layer_hybrid);
 
   /* Emit output tensor */
-  string output_name = HybridOutputTensor(decl, call, attr->q_params, 1, is_layer_hybrid);
+  string output_name = HybridOutputTensor(op, decl, call, attr->q_params, 1, is_layer_hybrid);
+
+  collect_quant_info(complete_name, attr->q_params, 1);
 
   output2params[output_name] = complete_name;
   if (is_layer_hybrid) {
@@ -1628,20 +1576,22 @@ void CodegenCSINN::SisoOp(std::ostringstream& decl, const CallNode* call, const 
 
 void CodegenCSINN::malloc_params(string struct_name, string params_name) {
   std::ostringstream t0;
-  t0 << "struct " << struct_name << " *" << params_name << " = csi_alloc_params(sizeof(struct "
+  t0 << "struct " << struct_name << " *" << params_name << " = csinn_alloc_params(sizeof(struct "
      << struct_name << "), sess)";
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 }
 
 void CodegenCSINN::Unary(const CallNode* call, string op_name) {
   std::ostringstream decl;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSIUnaryAttrs>();
-  SisoOp<QnnCSIUnaryAttrs>(decl, call, attr, op_name);
+  SisoOp<QnnCSIUnaryAttrs>(op, decl, call, attr, op_name);
 
+  push_decl(op);
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
 
-  malloc_params("siso_params", params_name);
+  malloc_params("csinn_siso_params", params_name);
 
   params_common_setup(decl, call, op_name, params_name, attr->layer_name.c_str());
   end_stream(decl, op_name);
@@ -1650,6 +1600,7 @@ void CodegenCSINN::Unary(const CallNode* call, string op_name) {
 void CodegenCSINN::DisoOp(const CallNode* call, string op_name, string out_dtype) {
   std::ostringstream decl;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnBinaryOpAttrs>();
   CHECK(attr);
   // QuantParams* q_params = GetQuantParams(attr->q_params);
@@ -1671,7 +1622,7 @@ void CodegenCSINN::DisoOp(const CallNode* call, string op_name, string out_dtype
   // CHECK(out_.size() == 1) << "Every args expects a single out_";
   if (call->args[0].as<tvm::relay::CallNode>() || call->args[0].as<tvm::relay::VarNode>() ||
       call->args[0].as<tvm::relay::TupleGetItemNode>()) {
-    lhs_name = HybridInputTensor(decl, call, 0, attr->q_params, 0, is_layer_hybrid);
+    lhs_name = HybridInputTensor(op, decl, call, 0, attr->q_params, 0, is_layer_hybrid);
     free_tensor[0] = lhs_name;
     buf_idx_++;
   } else {
@@ -1680,7 +1631,7 @@ void CodegenCSINN::DisoOp(const CallNode* call, string op_name, string out_dtype
     auto lhs_shape = GetShape(call->args[0]->checked_type());
     lhs_name = "lhs_" + to_string(buf_idx_);
     buf_idx_++;
-    CreateHybridConstantTensor(&lhs, lhs_name, lhs_shape, attr->q_params, 0, is_layer_hybrid);
+    CreateHybridConstantTensor(op, &lhs, lhs_name, lhs_shape, attr->q_params, 0, is_layer_hybrid);
     decl << lhs_name;
   }
 
@@ -1691,7 +1642,7 @@ void CodegenCSINN::DisoOp(const CallNode* call, string op_name, string out_dtype
       call->args[1].as<tvm::relay::TupleGetItemNode>()) {
     VisitExpr(call->args[1]);
     CHECK(out_.size() == 1) << "Every args expects a single out_";
-    rhs_name = HybridInputTensor(decl, call, 1, attr->q_params, 1, is_layer_hybrid);
+    rhs_name = HybridInputTensor(op, decl, call, 1, attr->q_params, 1, is_layer_hybrid);
     free_tensor[1] = rhs_name;
   } else {
     // add constant arg
@@ -1700,7 +1651,7 @@ void CodegenCSINN::DisoOp(const CallNode* call, string op_name, string out_dtype
     auto rhs = constant_[0];
     auto rhs_shape = GetShape(call->args[1]->checked_type());
     rhs_name = "rhs_" + to_string(buf_idx_);
-    CreateHybridConstantTensor(&rhs, rhs_name, rhs_shape, attr->q_params, 1, is_layer_hybrid);
+    CreateHybridConstantTensor(op, &rhs, rhs_name, rhs_shape, attr->q_params, 1, is_layer_hybrid);
     decl << rhs_name;
   }
 
@@ -1708,12 +1659,14 @@ void CodegenCSINN::DisoOp(const CallNode* call, string op_name, string out_dtype
   // if (out_dtype == "") {
   //   out_dtype = cfg->dtype_weight;
   // }
-  string output_name = HybridOutputTensor(decl, call, attr->q_params, 2, is_layer_hybrid);
+  string output_name = HybridOutputTensor(op, decl, call, attr->q_params, 2, is_layer_hybrid);
+
+  collect_quant_info(complete_name, attr->q_params, 2);
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-
-  malloc_params("diso_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_diso_params", params_name);
 
   output2params[output_name] = complete_name;
 
@@ -1736,36 +1689,36 @@ void CodegenCSINN::SetupPadding(string name, const T* attr) {
   std::ostringstream t0;
   if (pad.size() == 4) {
     t0 << name << "->pad_top = " << to_string(pad[0].as<IntImmNode>()->value);
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
     t0 << name << "->pad_left = " << to_string(pad[1].as<IntImmNode>()->value);
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
     t0 << name << "->pad_down = " << to_string(pad[2].as<IntImmNode>()->value);
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
     t0 << name << "->pad_right = " << to_string(pad[3].as<IntImmNode>()->value);
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
   } else if (pad.size() == 6) {
     t0 << name << "->pad_front = " << to_string(pad[0].as<IntImmNode>()->value);
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
     t0 << name << "->pad_top = " << to_string(pad[1].as<IntImmNode>()->value);
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
     t0 << name << "->pad_left = " << to_string(pad[2].as<IntImmNode>()->value);
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
     t0 << name << "->pad_back = " << to_string(pad[3].as<IntImmNode>()->value);
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
     t0 << name << "->pad_down = " << to_string(pad[4].as<IntImmNode>()->value);
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
     t0 << name << "->pad_right = " << to_string(pad[5].as<IntImmNode>()->value);
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
   } else {
     CHECK_EQ(pad.size(), 2);
     t0 << name << "->pad_top = " << to_string(pad[0].as<IntImmNode>()->value);
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
     t0 << name << "->pad_left = " << to_string(pad[1].as<IntImmNode>()->value);
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
     t0 << name << "->pad_down = " << to_string(pad[0].as<IntImmNode>()->value);
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
     t0 << name << "->pad_right = " << to_string(pad[1].as<IntImmNode>()->value);
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
   }
 }
 template <typename T>
@@ -1774,134 +1727,134 @@ void CodegenCSINN::Setup1dPadding(string name, const T* attr) {
   std::ostringstream t0;
   if (pad.size() == 2) {
     t0 << name << "->pad_left = " << to_string(pad[0].as<IntImmNode>()->value);
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
     t0 << name << "->pad_right = " << to_string(pad[1].as<IntImmNode>()->value);
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
   } else {
     CHECK_EQ(pad.size(), 1);
     t0 << name << "->pad_left = " << to_string(pad[0].as<IntImmNode>()->value);
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
     t0 << name << "->pad_right = " << to_string(pad[0].as<IntImmNode>()->value);
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
   }
 }
 
 template <typename T>
 void CodegenCSINN::SetupConv2dParams(string name, const T* attr) {
   std::ostringstream t0;
-  malloc_params("conv2d_params", name);
+  malloc_params("csinn_conv2d_params", name);
   t0 << name << "->group = " << to_string(attr->groups);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   Array<IndexExpr> strides = attr->strides;
   t0 << name << "->stride_height = " << to_string(strides[0].as<IntImmNode>()->value);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << name << "->stride_width = " << to_string(strides[1].as<IntImmNode>()->value);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   Array<IndexExpr> dilation = attr->dilation;
   t0 << name << "->dilation_height = " << to_string(dilation[0].as<IntImmNode>()->value);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << name << "->dilation_width = " << to_string(dilation[1].as<IntImmNode>()->value);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << name << "->conv_extra.kernel_tm = NULL";
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << name << "->conv_extra.conv_mode = CSINN_DIRECT";
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   SetupPadding(name, attr);
 }
 
 template <typename T>
 void CodegenCSINN::SetupDilation2dParams(string name, const T* attr) {
   std::ostringstream t0;
-  malloc_params("dilation2d_params", name);
+  malloc_params("csinn_dilation2d_params", name);
   Array<IndexExpr> strides = attr->strides;
   t0 << name << "->stride_height = " << to_string(strides[0].as<IntImmNode>()->value);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << name << "->stride_width = " << to_string(strides[1].as<IntImmNode>()->value);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   Array<IndexExpr> dilation = attr->dilations;
   t0 << name << "->dilation_height = " << to_string(dilation[0].as<IntImmNode>()->value);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << name << "->dilation_width = " << to_string(dilation[1].as<IntImmNode>()->value);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   SetupPadding(name, attr);
 }
 
 template <typename T>
 void CodegenCSINN::SetupConv3dParams(string name, const T* attr) {
   std::ostringstream t0;
-  malloc_params("conv3d_params", name);
+  malloc_params("csinn_conv3d_params", name);
   t0 << name << "->group = " << to_string(attr->groups);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   Array<IndexExpr> strides = attr->strides;
   t0 << name << "->stride_depth = " << to_string(strides[0].as<IntImmNode>()->value);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << name << "->stride_height = " << to_string(strides[1].as<IntImmNode>()->value);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << name << "->stride_width = " << to_string(strides[2].as<IntImmNode>()->value);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   Array<IndexExpr> dilation = attr->dilation;
   t0 << name << "->dilation_depth = " << to_string(dilation[0].as<IntImmNode>()->value);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << name << "->dilation_height = " << to_string(dilation[1].as<IntImmNode>()->value);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << name << "->dilation_width = " << to_string(dilation[2].as<IntImmNode>()->value);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   SetupPadding(name, attr);
 }
 
 template <typename T>
 void CodegenCSINN::SetupConv1dParams(string name, const T* attr) {
   std::ostringstream t0;
-  malloc_params("conv1d_params", name);
+  malloc_params("csinn_conv1d_params", name);
   t0 << name << "->group = " << to_string(attr->groups);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   Array<IndexExpr> strides = attr->strides;
   t0 << name << "->stride_width = " << to_string(strides[0].as<IntImmNode>()->value);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   Array<IndexExpr> dilation = attr->dilation;
   t0 << name << "->dilation_width = " << to_string(dilation[0].as<IntImmNode>()->value);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   Setup1dPadding<T>(name, attr);
 }
 
 template <typename T>
 void CodegenCSINN::SetupPoolParams(string name, const T* attr) {
   std::ostringstream t0;
-  malloc_params("pool_params", name);
+  malloc_params("csinn_pool_params", name);
   Array<IndexExpr> strides = attr->strides;
   t0 << name << "->stride_height = " << to_string(strides[0].as<IntImmNode>()->value);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << name << "->stride_width = " << to_string(strides[1].as<IntImmNode>()->value);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   Array<IndexExpr> pool_size = attr->pool_size;
   t0 << name << "->filter_height = " << to_string(pool_size[0].as<IntImmNode>()->value);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << name << "->filter_width = " << to_string(pool_size[1].as<IntImmNode>()->value);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   auto ceil_mode = attr->ceil_mode;
   t0 << name << "->ceil_mode = " << to_string(ceil_mode);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   SetupPadding(name, attr);
 }
 
 template <typename T>
 void CodegenCSINN::SetupPool3DParams(string name, const T* attr) {
   std::ostringstream t0;
-  malloc_params("pool_params", name);
+  malloc_params("csinn_pool_params", name);
   Array<IndexExpr> strides = attr->strides;
   t0 << name << "->stride_depth = " << to_string(strides[0].as<IntImmNode>()->value);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << name << "->stride_height = " << to_string(strides[1].as<IntImmNode>()->value);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << name << "->stride_width = " << to_string(strides[2].as<IntImmNode>()->value);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   Array<IndexExpr> pool_size = attr->pool_size;
   t0 << name << "->filter_depth = " << to_string(pool_size[0].as<IntImmNode>()->value);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << name << "->filter_height = " << to_string(pool_size[1].as<IntImmNode>()->value);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << name << "->filter_width = " << to_string(pool_size[2].as<IntImmNode>()->value);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   SetupPadding(name, attr);
 }
 
@@ -1919,8 +1872,11 @@ void CodegenCSINN::FreeTensor(const Expr& expr, string name) {
     }
     // Exclude input/output nodes
     if (io_nodes.find(name) == io_nodes.end()) {
-      ext_func_body.push_back("csi_mem_free(" + name + "->data);");
-      ext_func_body.push_back("csi_mem_free(" + name + ");");
+      std::ostringstream t0;
+      t0 << "shl_mem_free(" + name + "->data)";
+      func_def_.PushCall(t0);
+      t0 << "shl_mem_free(" + name + ")";
+      func_def_.PushCall(t0);
     }
   }
 }
@@ -1985,6 +1941,7 @@ std::shared_ptr<std::vector<float>> CodegenCSINN::FuseZpToBias(const CallNode* c
 void CodegenCSINN::Conv1d(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream buf;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSIConv1DAttrs>();
   CHECK(attr);
   QuantParams* q_params = GetQuantParams(attr->q_params);
@@ -1997,10 +1954,13 @@ void CodegenCSINN::Conv1d(const CallNode* call) {
   /* Emit_ input tensor */
   VisitExpr(call->args[0]);
   CHECK(out_.size() == 1) << "Every args expects a single out_";
-  string input_name = InputTensor(decl, call, 0, q_params[0], cfg->dtype_weight);
+  string input_name = InputTensor(op, decl, call, 0, q_params[0], cfg->dtype_weight);
 
   /* Emit output tensor */
-  string output_name = OutputTensor(decl, call, q_params[3], cfg->dtype_weight);
+  string output_name = OutputTensor(op, decl, call, q_params[3], cfg->dtype_weight);
+
+  string complete_name = get_complete_layer_name("conv1d", attr->layer_name.c_str());
+  collect_quant_info(complete_name, attr->q_params, 3);
 
   /* Emit kernel tensor */
   VisitExpr(call->args[1]);
@@ -2008,7 +1968,7 @@ void CodegenCSINN::Conv1d(const CallNode* call) {
   auto kernel = constant_[0];
   auto wshape = GetShape(call->args[1]->checked_type());
   string kernel_name = "kernel_" + to_string(buf_idx_);
-  CreateConstantTensor(&kernel, kernel_name, wshape, cfg->dtype_weight, q_params[1]);
+  CreateConstantTensor(op, &kernel, kernel_name, wshape, cfg->dtype_weight, q_params[1]);
   decl << ", " << kernel_name;
 
   /* Emit bias tensor */
@@ -2017,15 +1977,15 @@ void CodegenCSINN::Conv1d(const CallNode* call) {
   auto bias = constant_[0];
   auto bshape = GetShape(call->args[2]->checked_type());
   string bias_name = "bias_" + to_string(buf_idx_);
-  CreateConstantTensor(&bias, bias_name, bshape, cfg->dtype_activation, q_params[0], q_params[1],
-                       q_params[2]);
+  CreateConstantTensor(op, &bias, bias_name, bshape, cfg->dtype_activation, q_params[0],
+                       q_params[1], q_params[2]);
 
   decl << ", " << bias_name;
 
   string params_name = "params_" + to_string(buf_idx_);
 
   decl << ", " << params_name << ")";
-
+  push_decl(op);
   SetupConv1dParams<QnnCSIConv1DAttrs>(params_name, attr);
 
   PushOutput(output_name, call);
@@ -2036,21 +1996,24 @@ void CodegenCSINN::Conv1d(const CallNode* call) {
 
 void CodegenCSINN::params_hybrid_setup(std::ostringstream& decl, string op_name,
                                        std::vector<int> shape, string params_name,
-                                       string layer_name, string dtype, string layout) {
+                                       string layer_name, string dtype, CSINNTensor* tensor,
+                                       string layout) {
   std::ostringstream t0;
   if (!(layout_ == "NCHW" && layout == "CSINN_LAYOUT_NCHW")) {
     t0 << params_name << "->base.layout = CSINN_LAYOUT_" << layout_;
-    PushDeclLine(t0);
+    tensor->append_str(t0);
   }
   t0 << params_name << "->base.name = "
      << "\"" << op_name + "_" + layer_name << "\"";
-  PushDeclLine(t0);
-  setup_callback(decl, op_name, params_name);
+  tensor->append_str(t0);
+
+  t0 << "csinn_" << op_name << "_init" << decl.str();
+  tensor->append_str(t0);
   CreateHybridTensorSessData(shape, dtype);
 }
 
-string CodegenCSINN::InsertDataConvert(const CallNode* call, int input_index, string input_name,
-                                       QuantParams quant_params, string dtype) {
+string CodegenCSINN::InsertDataConvert(CSINNOP* op, const CallNode* call, int input_index,
+                                       string input_name, QuantParams quant_params, string dtype) {
   std::vector<int> ishape;
   if (auto pre_call = call->args[input_index].as<CallNode>()) {
     ishape = GetShape(pre_call->checked_type());
@@ -2062,26 +2025,31 @@ string CodegenCSINN::InsertDataConvert(const CallNode* call, int input_index, st
     ishape = GetShape(pre_call->checked_type());
   }
 
-  string hybrid_output_name = DataConvertTensor(ishape, quant_params, dtype);
+  string hybrid_output_name = DataConvertTensor(op, ishape, quant_params, dtype);
+
+  CSINNTensor* out_tensor = op->get_tensor(hybrid_output_name);
 
   std::ostringstream decl;
   decl << "(" << input_name << ", " << hybrid_output_name << ", ";
   string params_name = "hybrid_params_" + to_string(buf_idx_);
   decl << params_name << ")";
 
-  malloc_params("siso_params", params_name);
+  std::ostringstream p_decl;
+  p_decl << "struct csinn_siso_params *" << params_name
+         << " = csinn_alloc_params(sizeof(struct csinn_siso_params), sess)";
+  out_tensor->append_str(p_decl);
 
-  params_hybrid_setup(decl, "data_convert", ishape, params_name, params_name, dtype);
+  params_hybrid_setup(decl, "data_convert", ishape, params_name, params_name, dtype, out_tensor);
 
   std::ostringstream func;
-  func << "csi_data_convert" << decl.str() << ";";
-  ext_func_body.push_back(func.str());
+  func << "csinn_data_convert" << decl.str();
+  func_def_.PushCall(func);
 
   hybrid_buffer_name_.push_back(hybrid_output_name);
   return hybrid_output_name;
 }
 
-string CodegenCSINN::HybridInputTensor(std::ostringstream& decl, const CallNode* call,
+string CodegenCSINN::HybridInputTensor(CSINNOP* op, std::ostringstream& decl, const CallNode* call,
                                        int input_index, Array<Array<IndexExpr>> q_params,
                                        int params_index, bool is_layer_hybrid) {
   bool input_hybrid_quantize = false;
@@ -2108,13 +2076,14 @@ string CodegenCSINN::HybridInputTensor(std::ostringstream& decl, const CallNode*
   if (input_hybrid_quantize) {
     QuantParams* hybrid_q_params =
         GetQuantParams(get_quant_params_expr(q_params, params_index), hybrid_cfg);
-    input_name = InputTensorName(call, input_index, hybrid_q_params[0], hybrid_cfg->dtype_weight);
+    input_name =
+        InputTensorName(op, call, input_index, hybrid_q_params[0], hybrid_cfg->dtype_weight);
 
     if (!is_contain_item<string>(hybrid_layer_name, input_name) && !is_layer_hybrid) {
       // hybrid input +
       QuantParams* base_q_params = GetQuantParams(get_quant_params_expr(q_params, 0), cfg);
       string base_input_name =
-          InsertDataConvert(call, input_index, input_name, base_q_params[0], cfg->dtype_weight);
+          InsertDataConvert(op, call, input_index, input_name, base_q_params[0], cfg->dtype_weight);
       if (input_index == 0) {
         decl.str("");
         decl << "(" << base_input_name;
@@ -2126,11 +2095,11 @@ string CodegenCSINN::HybridInputTensor(std::ostringstream& decl, const CallNode*
     }
   } else {
     QuantParams* base_q_params = GetQuantParams(get_quant_params_expr(q_params, params_index), cfg);
-    input_name = InputTensorName(call, input_index, base_q_params[0], cfg->dtype_weight);
+    input_name = InputTensorName(op, call, input_index, base_q_params[0], cfg->dtype_weight);
 
     if (is_contain_item<string>(hybrid_layer_name, input_name) || is_layer_hybrid) {
       QuantParams* hybrid_q_params = GetQuantParams(get_quant_params_expr(q_params, 0), hybrid_cfg);
-      string hybrid_input_name = InsertDataConvert(call, input_index, input_name,
+      string hybrid_input_name = InsertDataConvert(op, call, input_index, input_name,
                                                    hybrid_q_params[0], hybrid_cfg->dtype_weight);
       if (input_index == 0) {
         decl.str("");
@@ -2146,14 +2115,14 @@ string CodegenCSINN::HybridInputTensor(std::ostringstream& decl, const CallNode*
   return input_name;
 }
 
-string CodegenCSINN::HybridOutputTensor(std::ostringstream& decl, const CallNode* call,
+string CodegenCSINN::HybridOutputTensor(CSINNOP* op, std::ostringstream& decl, const CallNode* call,
                                         Array<Array<IndexExpr>> q_params, int params_index,
                                         bool is_layer_hybrid) {
   string output_name = "output_" + to_string(buf_idx_);
   if (is_layer_hybrid) {
     QuantParams* hybrid_q_params =
         GetQuantParams(get_quant_params_expr(q_params, params_index), hybrid_cfg);
-    // output_name = OutputTensor(decl, call, hybrid_q_params[0], hybrid_cfg->dtype_weight);
+    // output_name = OutputTensor(op, decl, call, hybrid_q_params[0], hybrid_cfg->dtype_weight);
     auto type_node = call->checked_type().as<TensorTypeNode>();
     CHECK(type_node);
     auto out_shape = GetShape(call->checked_type());
@@ -2164,8 +2133,9 @@ string CodegenCSINN::HybridOutputTensor(std::ostringstream& decl, const CallNode
     hybrid_q_params[0].name = output_name;
     hybrid_q_params[0].offset = constant_offset;
     hybrid_q_params[0].shape = out_shape;
-    CreateTensor(output_name, "hybrid_alloc", out_shape, hybrid_q_params[0],
-                 hybrid_cfg->dtype_weight);
+    CSINNVarTensor* ret = CreateTensor(output_name, "hybrid_alloc", out_shape, hybrid_q_params[0],
+                                       hybrid_cfg->dtype_weight);
+    op->push_output(ret);
     decl << ", " << output_name;
     int out_index = CheckOutput(call);
     if (out_index > -1) {
@@ -2175,30 +2145,35 @@ string CodegenCSINN::HybridOutputTensor(std::ostringstream& decl, const CallNode
     CreateHybridTensorSessData(out_shape, hybrid_cfg->dtype_weight);
   } else {
     QuantParams* base_q_params = GetQuantParams(get_quant_params_expr(q_params, params_index), cfg);
-    output_name = OutputTensor(decl, call, base_q_params[0], cfg->dtype_weight);
+    output_name = OutputTensor(op, decl, call, base_q_params[0], cfg->dtype_weight);
   }
   return output_name;
 }
 
-void CodegenCSINN::CreateHybridConstantTensor(CSIConstant* data, string name,
+void CodegenCSINN::CreateHybridConstantTensor(CSINNOP* op, CSIConstant* data, string name,
                                               std::vector<int> shape,
                                               Array<Array<IndexExpr>> q_params, int params_index,
-                                              bool is_layer_hybrid, bool depthwise_kernel) {
+                                              bool is_layer_hybrid, string const_kind) {
+  bool depthwise_kernel =
+      is_contain_item<string>({"depthwise_kernel", "depthwise_bias"}, const_kind);
   if (is_layer_hybrid || is_contain_item<string>(hybrid_layer_name, name)) {
     QuantParams* hybrid_q_params =
-        GetQuantParams(get_quant_params_expr(q_params, params_index), hybrid_cfg);
-    CreateConstantTensor(data, name, shape, hybrid_cfg->dtype_weight, hybrid_q_params[0],
+        GetQuantParams(get_quant_params_expr(q_params, params_index), hybrid_cfg, const_kind);
+    CreateConstantTensor(op, data, name, shape, hybrid_cfg->dtype_weight, hybrid_q_params[0],
                          depthwise_kernel);
   } else {
-    QuantParams* base_q_params = GetQuantParams(get_quant_params_expr(q_params, params_index), cfg);
-    CreateConstantTensor(data, name, shape, cfg->dtype_weight, base_q_params[0], depthwise_kernel);
+    QuantParams* base_q_params =
+        GetQuantParams(get_quant_params_expr(q_params, params_index), cfg, const_kind);
+    CreateConstantTensor(op, data, name, shape, cfg->dtype_weight, base_q_params[0],
+                         depthwise_kernel);
   }
 }
 
-void CodegenCSINN::CreateBiasTensor(const CallNode* call, CSIConstant* data, string name,
-                                    Array<Array<IndexExpr>> q_params, bool* fuse_zp,
+void CodegenCSINN::CreateBiasTensor(CSINNOP* op, const CallNode* call, CSIConstant* data,
+                                    string name, Array<Array<IndexExpr>> q_params, bool* fuse_zp,
                                     bool is_layer_hybrid, bool is_input_hybrid,
-                                    bool is_weight_hybrid, bool depthwise_kernel) {
+                                    bool is_weight_hybrid, string const_kind) {
+  bool depthwise_kernel = const_kind == "depthwise_bias" ? true : false;
   // bool fuse_zp = false;
   std::shared_ptr<std::vector<float>> new_bias;
   if (is_contain_item<string>(hybrid_layer_name, name) || is_layer_hybrid) {
@@ -2206,7 +2181,12 @@ void CodegenCSINN::CreateBiasTensor(const CallNode* call, CSIConstant* data, str
          hybrid_cfg->quantization_scheme == "CSINN_QUANT_INT4_ASYM_W_SYM") &&
         cfg->fuse_zp2bias) {
       *fuse_zp = true;
-      QuantParams* hybrid_q_params = GetQuantParams(q_params, hybrid_cfg);
+      if (depthwise_kernel) {
+        const_kind = "input;depthwise_kernel;depthwise_bias;out";
+      } else {
+        const_kind = "input;conv_kernel;conv_bias;out";
+      }
+      QuantParams* hybrid_q_params = GetQuantParams(q_params, hybrid_cfg, const_kind);
       new_bias = FuseZpToBias(call, hybrid_q_params, depthwise_kernel);
     }
   } else {
@@ -2214,7 +2194,12 @@ void CodegenCSINN::CreateBiasTensor(const CallNode* call, CSIConstant* data, str
          cfg->quantization_scheme == "CSINN_QUANT_INT4_ASYM_W_SYM") &&
         cfg->fuse_zp2bias) {
       *fuse_zp = true;
-      QuantParams* base_q_params = GetQuantParams(q_params, cfg);
+      if (depthwise_kernel) {
+        const_kind = "input;depthwise_kernel;depthwise_bias;out";
+      } else {
+        const_kind = "input;conv_kernel;conv_bias;out";
+      }
+      QuantParams* base_q_params = GetQuantParams(q_params, cfg, const_kind);
       new_bias = FuseZpToBias(call, base_q_params, depthwise_kernel);
     }
   }
@@ -2235,7 +2220,7 @@ void CodegenCSINN::CreateBiasTensor(const CallNode* call, CSIConstant* data, str
   QuantParams weight_q_params;
   QuantParams bias_q_params;
 
-  auto p = GetQuantParams(q_params, cfg);
+  auto p = GetQuantParams(q_params, cfg, const_kind);
   in_q_params = p[0];
   weight_q_params = p[1];
   bias_q_params = p[1];
@@ -2244,17 +2229,17 @@ void CodegenCSINN::CreateBiasTensor(const CallNode* call, CSIConstant* data, str
   string weight_dtype = cfg->dtype_weight;
   string bias_dtype = cfg->dtype_activation;
   if (is_input_hybrid) {
-    p = GetQuantParams(get_quant_params_expr(q_params, 0), hybrid_cfg);
+    p = GetQuantParams(get_quant_params_expr(q_params, 0), hybrid_cfg, const_kind);
     in_q_params = p[0];
     input_dtype = hybrid_cfg->dtype_weight;
   }
   if (is_weight_hybrid) {
-    p = GetQuantParams(get_quant_params_expr(q_params, 1), hybrid_cfg);
+    p = GetQuantParams(get_quant_params_expr(q_params, 1), hybrid_cfg, const_kind);
     weight_q_params = p[0];
     weight_dtype = hybrid_cfg->dtype_weight;
   }
   if (is_layer_hybrid) {
-    auto hybrid_q_params = GetQuantParams(q_params, hybrid_cfg);
+    auto hybrid_q_params = GetQuantParams(q_params, hybrid_cfg, const_kind);
     in_q_params = hybrid_q_params[0];
     weight_q_params = hybrid_q_params[1];
     bias_q_params = hybrid_q_params[2];
@@ -2264,20 +2249,21 @@ void CodegenCSINN::CreateBiasTensor(const CallNode* call, CSIConstant* data, str
     bias_dtype = hybrid_cfg->dtype_activation;
   }
 
-  if (is_contain_item<string>(hybrid_layer_name, name)) {
+  if (is_contain_item<string>(hybrid_layer_name, name) || is_layer_hybrid) {
     if (input_dtype == "int16_t" && weight_dtype == "int16_t" && bias_dtype == "int32_t") {
-      CreateConstantTensor(data, name, bshape, hybrid_cfg->dtype_activation, bias_q_params, false,
-                           true);
+      CreateConstantTensor(op, data, name, bshape, hybrid_cfg->dtype_activation, bias_q_params,
+                           false, true);
     } else {
-      CreateConstantTensor(data, name, bshape, hybrid_cfg->dtype_activation, in_q_params,
+      CreateConstantTensor(op, data, name, bshape, hybrid_cfg->dtype_activation, in_q_params,
                            weight_q_params, bias_q_params);
     }
   } else {
     if (input_dtype == "int16_t" && weight_dtype == "int16_t" && bias_dtype == "int32_t") {
-      CreateConstantTensor(data, name, bshape, cfg->dtype_activation, bias_q_params, false, true);
+      CreateConstantTensor(op, data, name, bshape, cfg->dtype_activation, bias_q_params, false,
+                           true);
     } else {
-      CreateConstantTensor(data, name, bshape, cfg->dtype_activation, in_q_params, weight_q_params,
-                           bias_q_params);
+      CreateConstantTensor(op, data, name, bshape, cfg->dtype_activation, in_q_params,
+                           weight_q_params, bias_q_params);
     }
   }
 }
@@ -2288,6 +2274,8 @@ void CodegenCSINN::Conv2d(const CallNode* call, string op_name) {
   CHECK(attr);
   // QuantParams* q_params = GetQuantParams(attr->q_params);
   CHECK(call->args.size() == 3) << "Conv2d expects 3 args";
+
+  CSINNOP* op = new CSINNOP;
 
   /* Make function call with arguments start */
   decl << "(";
@@ -2307,43 +2295,48 @@ void CodegenCSINN::Conv2d(const CallNode* call, string op_name) {
   string complete_name = get_complete_layer_name(op_name, attr->layer_name.c_str());
   bool is_layer_hybrid = is_contain_item<string>(hybrid_layer_name, complete_name);
 
-  string input_name = HybridInputTensor(decl, call, 0, attr->q_params, 0, is_layer_hybrid);
+  string input_name = HybridInputTensor(op, decl, call, 0, attr->q_params, 0, is_layer_hybrid);
 
   /* Emit output tensor */
-  string output_name = HybridOutputTensor(decl, call, attr->q_params, 3, is_layer_hybrid);
+  string output_name = HybridOutputTensor(op, decl, call, attr->q_params, 3, is_layer_hybrid);
+
+  collect_quant_info(complete_name, attr->q_params, 3);
 
   /* Emit kernel tensor */
   VisitExpr(call->args[1]);
   CHECK(constant_.size() == 1) << "Every args expects a single constant_";
+
   auto kernel = constant_[0];
   string kernel_name = "kernel_" + to_string(buf_idx_);
 
-  CreateHybridConstantTensor(&kernel, kernel_name, wshape, attr->q_params, 1, is_layer_hybrid,
-                             depthwise_kernel);
+  CreateHybridConstantTensor(op, &kernel, kernel_name, wshape, attr->q_params, 1, is_layer_hybrid,
+                             depthwise_kernel ? "depthwise_kernel" : "conv_kernel");
 
   decl << ", " << kernel_name;
 
   /* Emit bias tensor */
   VisitExpr(call->args[2]);
   CHECK(constant_.size() == 1) << "Every args expects a single constant_";
+
   auto bias = constant_[0];
   string bias_name = "bias_" + to_string(buf_idx_);
   bool fuse_zp = false;
   bool is_input_hybrid = is_contain_item<string>(hybrid_layer_name, input_name);
   bool is_weight_hybrid = is_contain_item<string>(hybrid_layer_name, kernel_name);
-  CreateBiasTensor(call, &bias, bias_name, attr->q_params, &fuse_zp, is_layer_hybrid,
-                   is_input_hybrid, is_weight_hybrid, depthwise_kernel);
+  CreateBiasTensor(op, call, &bias, bias_name, attr->q_params, &fuse_zp, is_layer_hybrid,
+                   is_input_hybrid, is_weight_hybrid,
+                   depthwise_kernel ? "depthwise_bias" : "conv_bias");
   decl << ", " << bias_name;
 
   output2params[output_name] = complete_name;
 
   decl << ", " << params_name << ")";
-
+  push_decl(op);
   SetupConv2dParams<QnnCSIConv2DAttrs>(params_name, attr);
   if (fuse_zp) {
     std::ostringstream t0;
     t0 << params_name << "->conv_extra.fuse_zp2bias = true";
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
   }
   if (is_layer_hybrid) {
     PushOutput(output_name, call, hybrid_cfg->dtype_weight);
@@ -2359,6 +2352,7 @@ void CodegenCSINN::Conv2d(const CallNode* call, string op_name) {
 void CodegenCSINN::Conv3d(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream buf;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSIConv3DAttrs>();
   CHECK(attr);
   QuantParams* q_params = GetQuantParams(attr->q_params);
@@ -2371,10 +2365,13 @@ void CodegenCSINN::Conv3d(const CallNode* call) {
   /* Emit_ input tensor */
   VisitExpr(call->args[0]);
   CHECK(out_.size() == 1) << "Every args expects a single out_";
-  string input_name = InputTensor(decl, call, 0, q_params[0], cfg->dtype_weight);
+  string input_name = InputTensor(op, decl, call, 0, q_params[0], cfg->dtype_weight);
 
   /* Emit output tensor */
-  string output_name = OutputTensor(decl, call, q_params[3], cfg->dtype_weight);
+  string output_name = OutputTensor(op, decl, call, q_params[3], cfg->dtype_weight);
+
+  string complete_name = get_complete_layer_name("conv3d", attr->layer_name.c_str());
+  collect_quant_info(complete_name, attr->q_params, 3);
 
   /* Emit kernel tensor */
   VisitExpr(call->args[1]);
@@ -2382,7 +2379,7 @@ void CodegenCSINN::Conv3d(const CallNode* call) {
   auto kernel = constant_[0];
   auto wshape = GetShape(call->args[1]->checked_type());
   string kernel_name = "kernel_" + to_string(buf_idx_);
-  CreateConstantTensor(&kernel, kernel_name, wshape, cfg->dtype_weight, q_params[1]);
+  CreateConstantTensor(op, &kernel, kernel_name, wshape, cfg->dtype_weight, q_params[1]);
   decl << ", " << kernel_name;
 
   /* Emit bias tensor */
@@ -2391,15 +2388,15 @@ void CodegenCSINN::Conv3d(const CallNode* call) {
   auto bias = constant_[0];
   auto bshape = GetShape(call->args[2]->checked_type());
   string bias_name = "bias_" + to_string(buf_idx_);
-  CreateConstantTensor(&bias, bias_name, bshape, cfg->dtype_activation, q_params[0], q_params[1],
-                       q_params[2]);
+  CreateConstantTensor(op, &bias, bias_name, bshape, cfg->dtype_activation, q_params[0],
+                       q_params[1], q_params[2]);
 
   decl << ", " << bias_name;
 
   string params_name = "params_" + to_string(buf_idx_);
 
   decl << ", " << params_name << ")";
-
+  push_decl(op);
   SetupConv3dParams<QnnCSIConv3DAttrs>(params_name, attr);
 
   PushOutput(output_name, call);
@@ -2410,6 +2407,7 @@ void CodegenCSINN::Conv3d(const CallNode* call) {
 
 void CodegenCSINN::Dilation2d(const CallNode* call) {
   std::ostringstream decl;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSIDilation2DAttrs>();
   CHECK(attr);
   QuantParams* q_params = GetQuantParams(attr->q_params);
@@ -2422,10 +2420,13 @@ void CodegenCSINN::Dilation2d(const CallNode* call) {
   /* Emit_ input tensor */
   VisitExpr(call->args[0]);
   CHECK(out_.size() == 1) << "Every args expects a single out_";
-  string input_name = InputTensor(decl, call, 0, q_params[0], cfg->dtype_weight);
+  string input_name = InputTensor(op, decl, call, 0, q_params[0], cfg->dtype_weight);
 
   /* Emit output tensor */
-  string output_name = OutputTensor(decl, call, q_params[2], cfg->dtype_weight);
+  string output_name = OutputTensor(op, decl, call, q_params[2], cfg->dtype_weight);
+
+  string complete_name = get_complete_layer_name("dilation2d", attr->layer_name.c_str());
+  collect_quant_info(complete_name, attr->q_params, 2);
 
   /* Emit kernel tensor */
   VisitExpr(call->args[1]);
@@ -2434,14 +2435,14 @@ void CodegenCSINN::Dilation2d(const CallNode* call) {
   auto wshape = GetShape(call->args[1]->checked_type());
 
   string kernel_name = "kernel_" + to_string(buf_idx_);
-  CreateConstantTensor(&kernel, kernel_name, wshape, cfg->dtype_weight, q_params[1]);
+  CreateConstantTensor(op, &kernel, kernel_name, wshape, cfg->dtype_weight, q_params[1]);
 
   decl << ", " << kernel_name;
 
   string params_name = "params_" + to_string(buf_idx_);
 
   decl << ", " << params_name << ")";
-
+  push_decl(op);
   SetupDilation2dParams<QnnCSIDilation2DAttrs>(params_name, attr);
 
   PushOutput(output_name, call);
@@ -2452,6 +2453,7 @@ void CodegenCSINN::Dilation2d(const CallNode* call) {
 
 void CodegenCSINN::DeConv2d(const CallNode* call) {
   std::ostringstream decl;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSIDeConv2DAttrs>();
   CHECK(attr);
   CHECK(call->args.size() == 3) << "DeConv2d expects 3 args";
@@ -2466,10 +2468,12 @@ void CodegenCSINN::DeConv2d(const CallNode* call) {
   string complete_name = get_complete_layer_name("deconv2d", attr->layer_name.c_str());
   bool is_layer_hybrid = is_contain_item<string>(hybrid_layer_name, complete_name);
 
-  string input_name = HybridInputTensor(decl, call, 0, attr->q_params, 0, is_layer_hybrid);
+  string input_name = HybridInputTensor(op, decl, call, 0, attr->q_params, 0, is_layer_hybrid);
 
   /* Emit output tensor */
-  string output_name = HybridOutputTensor(decl, call, attr->q_params, 3, is_layer_hybrid);
+  string output_name = HybridOutputTensor(op, decl, call, attr->q_params, 3, is_layer_hybrid);
+
+  collect_quant_info(complete_name, attr->q_params, 3);
 
   output2params[output_name] = complete_name;
 
@@ -2479,7 +2483,7 @@ void CodegenCSINN::DeConv2d(const CallNode* call) {
   auto kernel = constant_[0];
   auto wshape = GetShape(call->args[1]->checked_type());
   string kernel_name = "kernel_" + to_string(buf_idx_);
-  CreateHybridConstantTensor(&kernel, kernel_name, wshape, attr->q_params, 1, is_layer_hybrid);
+  CreateHybridConstantTensor(op, &kernel, kernel_name, wshape, attr->q_params, 1, is_layer_hybrid);
   decl << ", " << kernel_name;
 
   /* Emit bias tensor */
@@ -2491,7 +2495,7 @@ void CodegenCSINN::DeConv2d(const CallNode* call) {
   bool fuse_zp = false;
   bool is_input_hybrid = is_contain_item<string>(hybrid_layer_name, input_name);
   bool is_weight_hybrid = is_contain_item<string>(hybrid_layer_name, kernel_name);
-  CreateBiasTensor(call, &bias, bias_name, attr->q_params, &fuse_zp, is_layer_hybrid,
+  CreateBiasTensor(op, call, &bias, bias_name, attr->q_params, &fuse_zp, is_layer_hybrid,
                    is_input_hybrid, is_weight_hybrid);
 
   decl << ", " << bias_name;
@@ -2499,8 +2503,15 @@ void CodegenCSINN::DeConv2d(const CallNode* call) {
   string params_name = "params_" + to_string(buf_idx_);
 
   decl << ", " << params_name << ")";
-
+  push_decl(op);
   SetupConv2dParams<QnnCSIDeConv2DAttrs>(params_name, attr);
+  std::ostringstream t0;
+  Array<IndexExpr> output_padding = attr->output_padding;
+  t0 << params_name
+     << "->out_pad_height = " << to_string(output_padding[0].as<IntImmNode>()->value);
+  func_def_.PushDecl(t0);
+  t0 << params_name << "->out_pad_width = " << to_string(output_padding[1].as<IntImmNode>()->value);
+  func_def_.PushDecl(t0);
 
   if (is_layer_hybrid) {
     PushOutput(output_name, call, hybrid_cfg->dtype_weight);
@@ -2514,6 +2525,7 @@ void CodegenCSINN::DeConv2d(const CallNode* call) {
 
 void CodegenCSINN::DeConv3d(const CallNode* call) {
   std::ostringstream decl;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSIDeConv3DAttrs>();
   CHECK(attr);
   QuantParams* q_params = GetQuantParams(attr->q_params);
@@ -2525,10 +2537,13 @@ void CodegenCSINN::DeConv3d(const CallNode* call) {
   /* Emit_ input tensor */
   VisitExpr(call->args[0]);
   CHECK(out_.size() == 1) << "Every args expects a single out_";
-  string input_name = InputTensor(decl, call, 0, q_params[0], cfg->dtype_weight);
+  string input_name = InputTensor(op, decl, call, 0, q_params[0], cfg->dtype_weight);
 
   /* Emit output tensor */
-  string output_name = OutputTensor(decl, call, q_params[3], cfg->dtype_weight);
+  string output_name = OutputTensor(op, decl, call, q_params[3], cfg->dtype_weight);
+
+  string complete_name = get_complete_layer_name("deconv3d", attr->layer_name.c_str());
+  collect_quant_info(complete_name, attr->q_params, 3);
 
   /* Emit kernel tensor */
   VisitExpr(call->args[1]);
@@ -2537,7 +2552,7 @@ void CodegenCSINN::DeConv3d(const CallNode* call) {
   auto wshape = GetShape(call->args[1]->checked_type());
 
   string kernel_name = "kernel_" + to_string(buf_idx_);
-  CreateConstantTensor(&kernel, kernel_name, wshape, cfg->dtype_weight, q_params[1]);
+  CreateConstantTensor(op, &kernel, kernel_name, wshape, cfg->dtype_weight, q_params[1]);
 
   decl << ", " << kernel_name;
 
@@ -2547,15 +2562,15 @@ void CodegenCSINN::DeConv3d(const CallNode* call) {
   auto bias = constant_[0];
   auto bshape = GetShape(call->args[2]->checked_type());
   string bias_name = "bias_" + to_string(buf_idx_);
-  CreateConstantTensor(&bias, bias_name, bshape, cfg->dtype_activation, q_params[0], q_params[1],
-                       q_params[2]);
+  CreateConstantTensor(op, &bias, bias_name, bshape, cfg->dtype_activation, q_params[0],
+                       q_params[1], q_params[2]);
 
   decl << ", " << bias_name;
 
   string params_name = "params_" + to_string(buf_idx_);
 
   decl << ", " << params_name << ")";
-
+  push_decl(op);
   SetupConv3dParams<QnnCSIDeConv3DAttrs>(params_name, attr);
 
   PushOutput(output_name, call);
@@ -2567,6 +2582,7 @@ void CodegenCSINN::DeConv3d(const CallNode* call) {
 void CodegenCSINN::Dense(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* dense_attr = call->attrs.as<QnnCSIDenseAttrs>();
   CHECK(dense_attr);
 
@@ -2582,11 +2598,14 @@ void CodegenCSINN::Dense(const CallNode* call) {
   string complete_name = get_complete_layer_name("fullyconnected", dense_attr->layer_name.c_str());
   bool is_layer_hybrid = is_contain_item<string>(hybrid_layer_name, complete_name);
 
-  string input_name = HybridInputTensor(decl, call, 0, dense_attr->q_params, 0, is_layer_hybrid);
+  string input_name =
+      HybridInputTensor(op, decl, call, 0, dense_attr->q_params, 0, is_layer_hybrid);
 
   /* Emit output tensor */
-  string output_name = HybridOutputTensor(decl, call, dense_attr->q_params, 3, is_layer_hybrid);
+  string output_name = HybridOutputTensor(op, decl, call, dense_attr->q_params, 3, is_layer_hybrid);
   output2params[output_name] = complete_name;
+
+  collect_quant_info(complete_name, dense_attr->q_params, 3);
 
   /* Emit kernel tensor */
   VisitExpr(call->args[1]);
@@ -2595,8 +2614,8 @@ void CodegenCSINN::Dense(const CallNode* call) {
   auto wshape = GetShape(call->args[1]->checked_type());
 
   string kernel_name = "kernel_" + to_string(buf_idx_);
-  CreateHybridConstantTensor(&kernel, kernel_name, wshape, dense_attr->q_params, 1,
-                             is_layer_hybrid);
+  CreateHybridConstantTensor(op, &kernel, kernel_name, wshape, dense_attr->q_params, 1,
+                             is_layer_hybrid, "dense_kernel");
 
   decl << ", " << kernel_name;
 
@@ -2609,15 +2628,16 @@ void CodegenCSINN::Dense(const CallNode* call) {
   bool fuse_zp = false;
   bool is_input_hybrid = is_contain_item<string>(hybrid_layer_name, input_name);
   bool is_weight_hybrid = is_contain_item<string>(hybrid_layer_name, kernel_name);
-  CreateBiasTensor(call, &bias, bias_name, dense_attr->q_params, &fuse_zp, is_layer_hybrid,
-                   is_input_hybrid, is_weight_hybrid);
+  CreateBiasTensor(op, call, &bias, bias_name, dense_attr->q_params, &fuse_zp, is_layer_hybrid,
+                   is_input_hybrid, is_weight_hybrid, "dense_bias");
 
   decl << ", " << bias_name;
 
   string params_name = "params_" + to_string(buf_idx_);
 
   decl << ", " << params_name << ")";
-  malloc_params("fc_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_fc_params", params_name);
   int units;
   if (dense_attr->units.defined()) {
     units = dense_attr->units.as<IntImmNode>()->value;
@@ -2625,10 +2645,10 @@ void CodegenCSINN::Dense(const CallNode* call) {
     units = wshape[0];
   }
   t0 << params_name << "->units = " << to_string(units);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   if (fuse_zp) {
     t0 << params_name << "->fc_extra.fuse_zp2bias = true";
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
   }
   if (is_layer_hybrid) {
     PushOutput(output_name, call, hybrid_cfg->dtype_weight);
@@ -2644,20 +2664,21 @@ void CodegenCSINN::Dense(const CallNode* call) {
 void CodegenCSINN::Softmax(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSIAxisAttrs>();
-  SisoOp<QnnCSIAxisAttrs>(decl, call, attr, "softmax");
+  SisoOp<QnnCSIAxisAttrs>(op, decl, call, attr, "softmax");
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-
-  malloc_params("softmax_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_softmax_params", params_name);
   int actual_aixs = attr->axis;
   auto ishape = GetShape(call->args[0]->checked_type());
   if (attr->axis < 0) {
     actual_aixs += ishape.size();
   }
   t0 << params_name << "->axis = " << to_string(actual_aixs);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
   params_common_setup(decl, call, "softmax", params_name, attr->layer_name.c_str());
   end_stream(decl, "softmax");
@@ -2667,16 +2688,17 @@ void CodegenCSINN::Softmax(const CallNode* call) {
 void CodegenCSINN::Reverse(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSIAxisAttrs>();
-  SisoOp<QnnCSIAxisAttrs>(decl, call, attr, "reverse");
+  SisoOp<QnnCSIAxisAttrs>(op, decl, call, attr, "reverse");
   auto ishape = GetShape(call->args[0]->checked_type());
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-
-  malloc_params("reverse_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_reverse_params", params_name);
   int axis = attr->axis < 0 ? attr->axis + ishape.size() : attr->axis;
   t0 << params_name << "->axis = " << axis;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
   params_common_setup(decl, call, "reverse", params_name, attr->layer_name.c_str());
   end_stream(decl, "reverse");
@@ -2686,16 +2708,17 @@ void CodegenCSINN::Reverse(const CallNode* call) {
 void CodegenCSINN::LogSoftmax(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSIAxisAttrs>();
-  SisoOp<QnnCSIAxisAttrs>(decl, call, attr, "log_softmax");
+  SisoOp<QnnCSIAxisAttrs>(op, decl, call, attr, "log_softmax");
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-
-  malloc_params("softmax_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_softmax_params", params_name);
   int axis = attr->axis == -1 ? 1 : attr->axis;
   t0 << params_name << "->axis = " << to_string(axis);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
   params_common_setup(decl, call, "log_softmax", params_name, attr->layer_name.c_str());
   end_stream(decl, "log_softmax");
@@ -2705,15 +2728,16 @@ void CodegenCSINN::LogSoftmax(const CallNode* call) {
 void CodegenCSINN::ExpandDims(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSIExpandDimsAttrs>();
-  SisoOp<QnnCSIExpandDimsAttrs>(decl, call, attr, "expand_dims");
+  SisoOp<QnnCSIExpandDimsAttrs>(op, decl, call, attr, "expand_dims");
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-
-  malloc_params("expand_dims_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_expand_dims_params", params_name);
   t0 << params_name << "->axis = " << to_string(attr->axis);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
   params_common_setup(decl, call, "expand_dims", params_name, attr->layer_name.c_str());
   end_stream(decl, "expand_dims");
@@ -2722,12 +2746,13 @@ void CodegenCSINN::ExpandDims(const CallNode* call) {
 
 void CodegenCSINN::MaxPool2d(const CallNode* call) {
   std::ostringstream decl;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSIMaxPool2DAttrs>();
-  SisoOp<QnnCSIMaxPool2DAttrs>(decl, call, attr, "maxpool2d");
+  SisoOp<QnnCSIMaxPool2DAttrs>(op, decl, call, attr, "maxpool2d");
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-
+  push_decl(op);
   SetupPoolParams(params_name, attr);
 
   params_common_setup(decl, call, "maxpool2d", params_name, attr->layer_name.c_str());
@@ -2737,17 +2762,18 @@ void CodegenCSINN::MaxPool2d(const CallNode* call) {
 
 void CodegenCSINN::AvgPool2d(const CallNode* call) {
   std::ostringstream decl;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSIAvgPool2DAttrs>();
-  SisoOp<QnnCSIAvgPool2DAttrs>(decl, call, attr, "avgpool2d");
+  SisoOp<QnnCSIAvgPool2DAttrs>(op, decl, call, attr, "avgpool2d");
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-
+  push_decl(op);
   SetupPoolParams(params_name, attr);
   std::ostringstream t0;
   auto count_include_pad = attr->count_include_pad;
   t0 << params_name << "->count_include_pad = " << to_string(count_include_pad);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
   params_common_setup(decl, call, "avgpool2d", params_name, attr->layer_name.c_str());
   end_stream(decl, "avgpool2d");
@@ -2756,12 +2782,13 @@ void CodegenCSINN::AvgPool2d(const CallNode* call) {
 
 void CodegenCSINN::AvgPool3d(const CallNode* call) {
   std::ostringstream decl;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSIAvgPool3DAttrs>();
-  SisoOp<QnnCSIAvgPool3DAttrs>(decl, call, attr, "avgpool3d");
+  SisoOp<QnnCSIAvgPool3DAttrs>(op, decl, call, attr, "avgpool3d");
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-
+  push_decl(op);
   SetupPool3DParams(params_name, attr);
 
   params_common_setup(decl, call, "avgpool3d", params_name, attr->layer_name.c_str(),
@@ -2772,12 +2799,13 @@ void CodegenCSINN::AvgPool3d(const CallNode* call) {
 
 void CodegenCSINN::MaxPool3d(const CallNode* call) {
   std::ostringstream decl;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSIMaxPool3DAttrs>();
-  SisoOp<QnnCSIMaxPool3DAttrs>(decl, call, attr, "maxpool3d");
+  SisoOp<QnnCSIMaxPool3DAttrs>(op, decl, call, attr, "maxpool3d");
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-
+  push_decl(op);
   SetupPool3DParams(params_name, attr);
 
   params_common_setup(decl, call, "maxpool3d", params_name, attr->layer_name.c_str(),
@@ -2789,13 +2817,14 @@ void CodegenCSINN::MaxPool3d(const CallNode* call) {
 void CodegenCSINN::GlobalAvgPool2d(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSIGlobalAvgPoolAttrs>();
-  SisoOp<QnnCSIGlobalAvgPoolAttrs>(decl, call, attr, "global_avgpool2d");
+  SisoOp<QnnCSIGlobalAvgPoolAttrs>(op, decl, call, attr, "global_avgpool2d");
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-
-  malloc_params("pool_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_pool_params", params_name);
 
   params_common_setup(decl, call, "global_avgpool2d", params_name, attr->layer_name.c_str());
   end_stream(decl, "global_avgpool2d");
@@ -2805,13 +2834,14 @@ void CodegenCSINN::GlobalAvgPool2d(const CallNode* call) {
 void CodegenCSINN::GlobalMaxPool2d(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSIGlobalMaxPoolAttrs>();
-  SisoOp<QnnCSIGlobalMaxPoolAttrs>(decl, call, attr, "global_maxpool2d");
+  SisoOp<QnnCSIGlobalMaxPoolAttrs>(op, decl, call, attr, "global_maxpool2d");
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-
-  malloc_params("pool_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_pool_params", params_name);
 
   params_common_setup(decl, call, "global_maxpool2d", params_name, attr->layer_name.c_str());
   end_stream(decl, "global_maxpool2d");
@@ -2820,12 +2850,13 @@ void CodegenCSINN::GlobalMaxPool2d(const CallNode* call) {
 
 void CodegenCSINN::Maxpool2dWithArgmax(const CallNode* call) {
   std::ostringstream decl;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSIMaxPool2DAttrs>();
-  SisoOp<QnnCSIMaxPool2DAttrs>(decl, call, attr);
+  SisoOp<QnnCSIMaxPool2DAttrs>(op, decl, call, attr);
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-
+  push_decl(op);
   SetupPoolParams(params_name, attr);
 
   params_common_setup(decl, call, "maxpool2d", params_name, attr->layer_name.c_str());
@@ -2835,6 +2866,7 @@ void CodegenCSINN::Maxpool2dWithArgmax(const CallNode* call) {
 
 void CodegenCSINN::MaxPool2dLocat(const CallNode* call) {
   std::ostringstream decl;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSIMaxPool2DLocatAttrs>();
   CHECK(attr);
   QuantParams* q_params = GetQuantParams(attr->q_params);
@@ -2847,14 +2879,17 @@ void CodegenCSINN::MaxPool2dLocat(const CallNode* call) {
   /* Emit_ input tensor */
   VisitExpr(call->args[0]);
   CHECK(out_.size() == 1) << "Every args expects a single out_";
-  string input_name = InputTensor(decl, call, 0, q_params[0], cfg->dtype_weight);
+  string input_name = InputTensor(op, decl, call, 0, q_params[0], cfg->dtype_weight);
 
   /* Emit output tensor */
-  string output_name = OutputTensor(decl, call, q_params[1], "int32_t");
+  string output_name = OutputTensor(op, decl, call, q_params[1], "int32_t");
+
+  string complete_name = get_complete_layer_name("maxpool_locat", attr->layer_name.c_str());
+  collect_quant_info(complete_name, attr->q_params, 1);
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-
+  push_decl(op);
   SetupPoolParams(params_name, attr);
 
   PushOutput(output_name, call, "int32_t");
@@ -2866,6 +2901,7 @@ void CodegenCSINN::MaxPool2dLocat(const CallNode* call) {
 void CodegenCSINN::UnPool2d(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSIUnPoolingAttrs>();
   CHECK(attr);
   QuantParams* q_params = GetQuantParams(attr->q_params);
@@ -2878,32 +2914,35 @@ void CodegenCSINN::UnPool2d(const CallNode* call) {
   /* Emit_ input tensor */
   VisitExpr(call->args[0]);
   CHECK(out_.size() == 1) << "Every args expects a single out_";
-  string input_name = InputTensor(decl, call, 0, q_params[0], cfg->dtype_weight);
+  string input_name = InputTensor(op, decl, call, 0, q_params[0], cfg->dtype_weight);
   decl << ", ";
 
   /* Emit_ mask tensor */
   VisitExpr(call->args[1]);
   CHECK(out_.size() == 1) << "Every args expects a single out_";
-  string mask_name = InputTensor(decl, call, 1, q_params[1], "int32_t");
+  string mask_name = InputTensor(op, decl, call, 1, q_params[1], "int32_t");
 
   /* Emit output tensor */
-  string output_name = OutputTensor(decl, call, q_params[2], cfg->dtype_weight);
+  string output_name = OutputTensor(op, decl, call, q_params[2], cfg->dtype_weight);
+
+  string complete_name = get_complete_layer_name("unpooling", attr->layer_name.c_str());
+  collect_quant_info(complete_name, attr->q_params, 2);
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-
-  malloc_params("unpooling_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_unpooling_params", params_name);
 
   t0 << params_name
      << "->pad_out_height = " << to_string(attr->out_padding[0].as<IntImmNode>()->value);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name
      << "->pad_out_width = " << to_string(attr->out_padding[1].as<IntImmNode>()->value);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->scale_height = " << to_string(attr->scales[0].as<IntImmNode>()->value);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->scale_width = " << to_string(attr->scales[1].as<IntImmNode>()->value);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
   PushOutput(output_name, call);
   params_common_setup(decl, call, "unpooling", params_name, attr->layer_name.c_str());
@@ -2915,6 +2954,7 @@ void CodegenCSINN::UnPool2d(const CallNode* call) {
 void CodegenCSINN::PSROIPool(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSIPSROIPoolingAttrs>();
   CHECK(attr);
   QuantParams* q_params = GetQuantParams(attr->q_params);
@@ -2927,16 +2967,19 @@ void CodegenCSINN::PSROIPool(const CallNode* call) {
   /* Emit_ input tensor */
   VisitExpr(call->args[0]);
   CHECK(out_.size() == 1) << "Every args expects a single out_";
-  string input_name = InputTensor(decl, call, 0, q_params[0], cfg->dtype_weight);
+  string input_name = InputTensor(op, decl, call, 0, q_params[0], cfg->dtype_weight);
   decl << ", ";
 
   /* Emit_ roi tensor */
   VisitExpr(call->args[1]);
   CHECK(out_.size() == 1) << "Every args expects a single out_";
-  string roi_name = InputTensor(decl, call, 1, q_params[1], "int32_t");
+  string roi_name = InputTensor(op, decl, call, 1, q_params[1], "int32_t");
 
   /* Emit output tensor */
-  string output_name = OutputTensor(decl, call, q_params[2], cfg->dtype_weight);
+  string output_name = OutputTensor(op, decl, call, q_params[2], cfg->dtype_weight);
+
+  string complete_name = get_complete_layer_name("psroipooling", attr->layer_name.c_str());
+  collect_quant_info(complete_name, attr->q_params, 2);
 
   int32_t multiplier;
   int32_t shift;
@@ -2944,19 +2987,19 @@ void CodegenCSINN::PSROIPool(const CallNode* call) {
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-
-  malloc_params("psroipooling_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_psroipooling_params", params_name);
 
   t0 << params_name << "->output_dim = " << to_string(attr->output_dim);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->group_size = " << to_string(attr->group_size);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->spatial_scale = " << to_string(attr->spatial_scale);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->spatial_scale_multiplier = " << to_string(multiplier);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->spatial_scale_shift = " << to_string(shift);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
   PushOutput(output_name, call);
   params_common_setup(decl, call, "psroipooling", params_name, attr->layer_name.c_str());
@@ -2968,6 +3011,7 @@ void CodegenCSINN::PSROIPool(const CallNode* call) {
 void CodegenCSINN::ROIPool(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSIROIPoolingAttrs>();
   CHECK(attr);
   QuantParams* q_params = GetQuantParams(attr->q_params);
@@ -2979,16 +3023,19 @@ void CodegenCSINN::ROIPool(const CallNode* call) {
   /* Emit_ input tensor */
   VisitExpr(call->args[0]);
   CHECK(out_.size() == 1) << "Every args expects a single out_";
-  string input_name = InputTensor(decl, call, 0, q_params[0], cfg->dtype_weight);
+  string input_name = InputTensor(op, decl, call, 0, q_params[0], cfg->dtype_weight);
   decl << ", ";
 
   /* Emit_ roi tensor */
   VisitExpr(call->args[1]);
   CHECK(out_.size() == 1) << "Every args expects a single out_";
-  string roi_name = InputTensor(decl, call, 1, q_params[1], "int32_t");
+  string roi_name = InputTensor(op, decl, call, 1, q_params[1], "int32_t");
 
   /* Emit output tensor */
-  string output_name = OutputTensor(decl, call, q_params[2], cfg->dtype_weight);
+  string output_name = OutputTensor(op, decl, call, q_params[2], cfg->dtype_weight);
+
+  string complete_name = get_complete_layer_name("roipool", attr->layer_name.c_str());
+  collect_quant_info(complete_name, attr->q_params, 2);
 
   int32_t multiplier;
   int32_t shift;
@@ -2996,21 +3043,21 @@ void CodegenCSINN::ROIPool(const CallNode* call) {
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-
+  push_decl(op);
   Array<IndexExpr> pooled_size = attr->pooled_size;
 
-  malloc_params("roi_pool_params", params_name);
+  malloc_params("csinn_roi_pool_params", params_name);
 
   t0 << params_name << "->pooled_size_h = " << to_string(pooled_size[0].as<IntImmNode>()->value);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->pooled_size_w = " << to_string(pooled_size[1].as<IntImmNode>()->value);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->spatial_scale = " << to_string(attr->spatial_scale);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->spatial_scale_multiplier = " << to_string(multiplier);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->spatial_scale_shift = " << to_string(shift);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
   PushOutput(output_name, call);
   params_common_setup(decl, call, "roipool", params_name, attr->layer_name.c_str());
@@ -3023,6 +3070,7 @@ void CodegenCSINN::Proposal(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream t0;
   std::ostringstream mstream, sstream, fstream;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSIProposalAttrs>();
   CHECK(attr);
   QuantParams* q_params = GetQuantParams(attr->q_params);
@@ -3034,13 +3082,13 @@ void CodegenCSINN::Proposal(const CallNode* call) {
   /* Emit_ cls tensor */
   VisitExpr(call->args[0]);
   CHECK(out_.size() == 1) << "Every args expects a single out_";
-  string cls_name = InputTensor(decl, call, 0, q_params[0], cfg->dtype_weight);
+  string cls_name = InputTensor(op, decl, call, 0, q_params[0], cfg->dtype_weight);
   decl << ", ";
 
   /* Emit_ bbox tensor */
   VisitExpr(call->args[1]);
   CHECK(out_.size() == 1) << "Every args expects a single out_";
-  string bbox_name = InputTensor(decl, call, 1, q_params[1], cfg->dtype_weight);
+  string bbox_name = InputTensor(op, decl, call, 1, q_params[1], cfg->dtype_weight);
 
   /* Emit_ im_info tensor */
   VisitExpr(call->args[2]);
@@ -3048,15 +3096,20 @@ void CodegenCSINN::Proposal(const CallNode* call) {
   auto im_info = constant_[0];
   auto im_info_shape = GetShape(call->args[2]->checked_type());
   string im_info_name = "im_info_" + to_string(buf_idx_);
-  string layout = GetCSINNWeightLayout(im_info_shape);
-  CreateConstantTensorBase(im_info_name, im_info.size, im_info_shape, "int32_t", layout);
-  t0 << im_info_name << "->dtype = CSINN_DTYPE_FLOAT32";
-  PushDeclLine(t0);
+  int32_t layout = GetCSINNTensorWeightLayout(im_info_shape);
+  CSINNConstantTensor* ret =
+      CreateConstantTensorBase(im_info_name, im_info.size, im_info_shape, "int32_t", layout);
+  ret->tensor->dtype = CSINN_DTYPE_FLOAT32;
+  ret->set_const(&im_info);
+  op->push_constant(ret);
 
   decl << "," << im_info_name;
 
   /* Emit output tensor */
-  string output_name = OutputTensor(decl, call, q_params[3], cfg->dtype_weight);
+  string output_name = OutputTensor(op, decl, call, q_params[3], cfg->dtype_weight);
+
+  string complete_name = get_complete_layer_name("proposal", attr->layer_name.c_str());
+  collect_quant_info(complete_name, attr->q_params, 3);
 
   int32_t scales_num = attr->scales.size();
   int32_t ratios_num = attr->ratios.size();
@@ -3074,11 +3127,11 @@ void CodegenCSINN::Proposal(const CallNode* call) {
     fstream << to_string(scale) << ", ";
   }
   mstream << "}";
-  PushDeclLine(mstream);
+  func_def_.PushDecl(mstream);
   sstream << "}";
-  PushDeclLine(sstream);
+  func_def_.PushDecl(sstream);
   fstream << "}";
-  PushDeclLine(fstream);
+  func_def_.PushDecl(fstream);
 
   mstream << "int32_t ratio_multipliers_" << to_string(buf_idx_) << "[" << ratios_num << "] = {";
   sstream << "int32_t ratio_shifts_" << to_string(buf_idx_) << "[" << ratios_num << "] = {";
@@ -3091,50 +3144,50 @@ void CodegenCSINN::Proposal(const CallNode* call) {
     fstream << to_string(ratios) << ", ";
   }
   mstream << "}";
-  PushDeclLine(mstream);
+  func_def_.PushDecl(mstream);
   sstream << "}";
-  PushDeclLine(sstream);
+  func_def_.PushDecl(sstream);
   fstream << "}";
-  PushDeclLine(fstream);
+  func_def_.PushDecl(fstream);
 
   GetMultiplierAndShift(attr->threshold, &multiplier, &shift);
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-
-  malloc_params("proposal_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_proposal_params", params_name);
   t0 << params_name << "->scales = scale_" << to_string(buf_idx_);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->scale_multipliers = scale_multipliers_" << to_string(buf_idx_);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->scale_shifts = scale_shifts_" << to_string(buf_idx_);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->scales_num = " << to_string(scales_num);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->ratios = ratios_" << to_string(buf_idx_);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->ratio_multipliers = ratio_multipliers_" << to_string(buf_idx_);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->ratio_shifts = ratio_shifts_" << to_string(buf_idx_);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->ratios_num = " << to_string(ratios_num);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->feature_stride = " << to_string(attr->feature_stride);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->threshold = " << to_string(attr->threshold);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->threshold_multiplier = " << to_string(multiplier);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->threshold_shift = " << to_string(shift);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->rpn_pre_nms_top_n = " << to_string(attr->rpn_pre_nms_top_n);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->rpn_post_nms_top_n = " << to_string(attr->rpn_post_nms_top_n);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->rpn_min_size = " << to_string(attr->rpn_min_size);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->iou_loss = " << to_string(attr->iou_loss);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
   PushOutput(output_name, call);
   params_common_setup(decl, call, "proposal", params_name, attr->layer_name.c_str());
@@ -3146,6 +3199,7 @@ void CodegenCSINN::Proposal(const CallNode* call) {
 void CodegenCSINN::UpSampling(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSIUpSamplingAttrs>();
   CHECK(attr);
   CHECK(call->args.size() == 1) << "UpSampling expects 1 args";
@@ -3158,16 +3212,18 @@ void CodegenCSINN::UpSampling(const CallNode* call) {
   CHECK(out_.size() == 1) << "Every args expects a single out_";
   string complete_name = get_complete_layer_name("resize", attr->layer_name.c_str());
   bool is_layer_hybrid = is_contain_item<string>(hybrid_layer_name, complete_name);
-  string input_name = HybridInputTensor(decl, call, 0, attr->q_params, 0, is_layer_hybrid);
+  string input_name = HybridInputTensor(op, decl, call, 0, attr->q_params, 0, is_layer_hybrid);
 
   /* Emit output tensor */
-  string output_name = HybridOutputTensor(decl, call, attr->q_params, 1, is_layer_hybrid);
+  string output_name = HybridOutputTensor(op, decl, call, attr->q_params, 1, is_layer_hybrid);
   output2params[output_name] = complete_name;
+
+  collect_quant_info(complete_name, attr->q_params, 1);
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-
-  malloc_params("resize_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_resize_params", params_name);
   t0 << params_name << "->resize_mode = ";
   if (attr->method == "bilinear") {
     t0 << "CSINN_RESIZE_BILINEAR";
@@ -3178,9 +3234,9 @@ void CodegenCSINN::UpSampling(const CallNode* call) {
   } else {
     CHECK(0);
   }
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->align_corners = " << to_string(attr->align_corners);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
   if (is_layer_hybrid) {
     PushOutput(output_name, call, hybrid_cfg->dtype_weight);
@@ -3196,13 +3252,14 @@ void CodegenCSINN::Relu(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream buf;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSIUnaryAttrs>();
-  SisoOp<QnnCSIUnaryAttrs>(decl, call, attr, "relu");
+  SisoOp<QnnCSIUnaryAttrs>(op, decl, call, attr, "relu");
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-
-  malloc_params("relu_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_relu_params", params_name);
   params_common_setup(decl, call, "relu", params_name, attr->layer_name.c_str());
   end_stream(decl, "relu");
   FreeTensor(call->args[0], siso_input_name);
@@ -3211,6 +3268,7 @@ void CodegenCSINN::Relu(const CallNode* call) {
 void CodegenCSINN::Fsmn(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSIFsmnAttrs>();
   CHECK(attr);
   QuantParams* q_params = GetQuantParams(attr->q_params);
@@ -3221,7 +3279,7 @@ void CodegenCSINN::Fsmn(const CallNode* call) {
   /* Emit_ input tensor */
   VisitExpr(call->args[0]);
   CHECK(out_.size() == 1) << "Every args expects a single out_";
-  string input_name = InputTensor(decl, call, 0, q_params[0], cfg->dtype_weight);
+  string input_name = InputTensor(op, decl, call, 0, q_params[0], cfg->dtype_weight);
 
   /* Emit l_filter tensor */
   VisitExpr(call->args[1]);
@@ -3229,7 +3287,7 @@ void CodegenCSINN::Fsmn(const CallNode* call) {
   auto l_filter = constant_[0];
   auto lshape = GetShape(call->args[1]->checked_type());
   string l_filter_name = "l_filter_" + to_string(buf_idx_);
-  CreateConstantTensor(&l_filter, l_filter_name, lshape, cfg->dtype_weight, q_params[1]);
+  CreateConstantTensor(op, &l_filter, l_filter_name, lshape, cfg->dtype_weight, q_params[1]);
   decl << ", " << l_filter_name;
 
   /* Emit r_filter tensor */
@@ -3238,7 +3296,7 @@ void CodegenCSINN::Fsmn(const CallNode* call) {
   auto r_filter = constant_[0];
   auto rshape = GetShape(call->args[2]->checked_type());
   string r_filter_name = "r_filter_" + to_string(buf_idx_);
-  CreateConstantTensor(&r_filter, r_filter_name, rshape, cfg->dtype_weight, q_params[2]);
+  CreateConstantTensor(op, &r_filter, r_filter_name, rshape, cfg->dtype_weight, q_params[2]);
   decl << ", " << r_filter_name;
 
   /* Emit frame sequence tensor */
@@ -3247,7 +3305,7 @@ void CodegenCSINN::Fsmn(const CallNode* call) {
   auto sequence = constant_[0];
   auto seq_shape = GetShape(call->args[3]->checked_type());
   string sequence_name = "sequence_" + to_string(buf_idx_);
-  CreateConstantTensor(&sequence, sequence_name, seq_shape, cfg->dtype_weight, q_params[3]);
+  CreateConstantTensor(op, &sequence, sequence_name, seq_shape, cfg->dtype_weight, q_params[3]);
   decl << ", " << sequence_name;
 
   /* Emit frame counter tensor */
@@ -3256,27 +3314,30 @@ void CodegenCSINN::Fsmn(const CallNode* call) {
   auto frame_counter = constant_[0];
   auto counter_shape = GetShape(call->args[4]->checked_type());
   string counter_name = "frame_counter_" + to_string(buf_idx_);
-  CreateConstantTensor(&frame_counter, counter_name, counter_shape, "int32_t", q_params[4]);
+  CreateConstantTensor(op, &frame_counter, counter_name, counter_shape, "int32_t", q_params[4]);
   decl << ", " << counter_name;
 
   /* Emit output tensor */
-  string output_name = OutputTensor(decl, call, q_params[4], cfg->dtype_weight);
+  string output_name = OutputTensor(op, decl, call, q_params[4], cfg->dtype_weight);
+
+  string complete_name = get_complete_layer_name("fsmn", attr->layer_name.c_str());
+  collect_quant_info(complete_name, attr->q_params, 4);
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-
-  malloc_params("fsmn_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_fsmn_params", params_name);
 
   t0 << params_name << "->l_order = " << to_string(attr->l_order);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->r_order = " << to_string(attr->r_order);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->l_stride = " << to_string(attr->l_stride);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->r_stride = " << to_string(attr->r_stride);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->unavailable_frames = " << to_string(attr->unavailable_frames);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
   PushOutput(output_name, call);
   params_common_setup(decl, call, "fsmn", params_name, attr->layer_name.c_str());
@@ -3287,23 +3348,24 @@ void CodegenCSINN::Fsmn(const CallNode* call) {
 void CodegenCSINN::Full(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSIFullAttrs>();
   auto shape = attr->shape;
-  SisoOp<QnnCSIFullAttrs>(decl, call, attr, "full");
+  SisoOp<QnnCSIFullAttrs>(op, decl, call, attr, "full");
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-
+  push_decl(op);
   t0 << "int32_t *shape_" << buf_idx_ << " = malloc(" << shape.size() << " * 4)";
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   for (uint k = 0; k < shape.size(); k++) {
     t0 << "shape_" << buf_idx_ << "[" << k << "] = " << Downcast<IndexExpr>(shape[k]);
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
   }
 
-  malloc_params("full_params", params_name);
+  malloc_params("csinn_full_params", params_name);
   t0 << params_name << "->shape = shape_" << buf_idx_;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
   params_common_setup(decl, call, "full", params_name, attr->layer_name.c_str());
   end_stream(decl, "full");
@@ -3313,6 +3375,7 @@ void CodegenCSINN::Full(const CallNode* call) {
 void CodegenCSINN::Take(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSITakeAttrs>();
   CHECK(attr);
   QuantParams* q_params = GetQuantParams(attr->q_params);
@@ -3327,7 +3390,7 @@ void CodegenCSINN::Take(const CallNode* call) {
   /* Emit_ input tensor */
   VisitExpr(call->args[0]);
   CHECK(out_.size() == 1) << "Every args expects a single out_";
-  string input_name = InputTensor(decl, call, 0, q_params[0], cfg->dtype_weight);
+  string input_name = InputTensor(op, decl, call, 0, q_params[0], cfg->dtype_weight);
   auto in_shape = GetShape(call->args[0]->checked_type());
   int* axis = NULL;
   if (attr->axis.defined()) {
@@ -3342,24 +3405,27 @@ void CodegenCSINN::Take(const CallNode* call) {
   auto indices = constant_[0];
   auto indices_shape = GetShape(call->args[1]->checked_type());
   string indices_name = "indices_" + to_string(buf_idx_);
-  CreateConstantTensor(&indices, indices_name, indices_shape, "int32_t", q_params[1]);
+  CreateConstantTensor(op, &indices, indices_name, indices_shape, "int32_t", q_params[1]);
   decl << ", " << indices_name;
 
   string params_name = "params_" + to_string(buf_idx_);
 
   /* Emit output tensor */
-  string output_name = OutputTensor(decl, call, q_params[2], cfg->dtype_weight);
+  string output_name = OutputTensor(op, decl, call, q_params[2], cfg->dtype_weight);
+
+  string complete_name = get_complete_layer_name("gather", attr->layer_name.c_str());
+  collect_quant_info(complete_name, attr->q_params, 2);
 
   decl << ", " << params_name << ")";
-
+  push_decl(op);
   /* Use gather op */
-  malloc_params("gather_params", params_name);
+  malloc_params("csinn_gather_params", params_name);
   if (axis == NULL) {
     t0 << params_name << "->axis = NULL";
   } else {
     t0 << params_name << "->axis = " << axis[0];
   }
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
   PushOutput(output_name, call);
   params_common_setup(decl, call, "gather", params_name, attr->layer_name.c_str());
@@ -3370,20 +3436,21 @@ void CodegenCSINN::Take(const CallNode* call) {
 void CodegenCSINN::Clip(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSIClipAttrs>();
   double min = attr->a_min;
   double max = attr->a_max;
 
-  SisoOp<QnnCSIClipAttrs>(decl, call, attr, "clip");
+  SisoOp<QnnCSIClipAttrs>(op, decl, call, attr, "clip");
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-
-  malloc_params("clip_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_clip_params", params_name);
   t0 << params_name << "->min_value = " << to_string(min);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->max_value = " << to_string(max);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
   params_common_setup(decl, call, "clip", params_name, attr->layer_name.c_str());
   end_stream(decl, "clip");
@@ -3393,6 +3460,7 @@ void CodegenCSINN::Clip(const CallNode* call) {
 void CodegenCSINN::Pad(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSIPadAttrs>();
   auto pad_width = attr->pad_width;
   string pad_mode = attr->pad_mode;
@@ -3403,50 +3471,55 @@ void CodegenCSINN::Pad(const CallNode* call) {
   /* Emit input tensor */
   VisitExpr(call->args[0]);
   CHECK(out_.size() == 1) << "Every args expects a single out_";
-  siso_input_name = InputTensor(decl, call, 0, q_params[0], cfg->dtype_weight);
+  siso_input_name = InputTensor(op, decl, call, 0, q_params[0], cfg->dtype_weight);
 
   /* Emit output tensor */
-  string output_name = OutputTensor(decl, call, q_params[2], cfg->dtype_weight);
+  string output_name = OutputTensor(op, decl, call, q_params[2], cfg->dtype_weight);
+
+  string complete_name = get_complete_layer_name("pad", attr->layer_name.c_str());
+  collect_quant_info(complete_name, attr->q_params, 2);
 
   PushOutput(output_name, call);
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-
+  push_decl(op);
   t0 << "int32_t *pad_before_" << buf_idx_ << " = malloc(" << pad_width.size() << " * 4)";
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   for (uint k = 0; k < pad_width.size(); k++) {
-    t0 << "pad_before_" << buf_idx_ << "[" << k << "] = " << Downcast<IndexExpr>(pad_width[k][0]);
-    PushDeclLine(t0);
+    t0 << "pad_before_" << buf_idx_ << "[" << k
+       << "] = " << to_string(pad_width[k][0].as<IntImmNode>()->value);
+    func_def_.PushDecl(t0);
   }
 
   t0 << "int32_t *pad_after_" << buf_idx_ << " = malloc(" << pad_width.size() << " * 4)";
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   for (uint k = 0; k < pad_width.size(); k++) {
-    t0 << "pad_after_" << buf_idx_ << "[" << k << "] = " << Downcast<IndexExpr>(pad_width[k][1]);
-    PushDeclLine(t0);
+    t0 << "pad_after_" << buf_idx_ << "[" << k
+       << "] = " << to_string(pad_width[k][1].as<IntImmNode>()->value);
+    func_def_.PushDecl(t0);
   }
 
-  malloc_params("pad_params", params_name);
+  malloc_params("csinn_pad_params", params_name);
   t0 << params_name << "->pad_before = pad_before_" << buf_idx_;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->pad_after = pad_after_" << buf_idx_;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   if (pad_mode == "constant") {
     t0 << params_name << "->pad_mode = CSINN_PAD_CONSTANT";
   } else {
     t0 << params_name << "->pad_mode = CSINN_PAD_EDGE";
   }
 
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   VisitExpr(call->args[1]);
   auto pad_value = constant_[0];
   float* pad_value_ = reinterpret_cast<float*>(pad_value.data_buf);
   /* FIXME: real pad_value in arg[1] */
   t0 << params_name << "->pad_value = " << *pad_value_;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->pad_num = " << to_string(pad_width.size());
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
   params_common_setup(decl, call, "pad", params_name, attr->layer_name.c_str());
   end_stream(decl, "pad");
@@ -3456,23 +3529,24 @@ void CodegenCSINN::Pad(const CallNode* call) {
 void CodegenCSINN::Tile(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSITileAttrs>();
   auto reps = attr->reps;
-  SisoOp<QnnCSITileAttrs>(decl, call, attr, "tile");
+  SisoOp<QnnCSITileAttrs>(op, decl, call, attr, "tile");
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-
+  push_decl(op);
   t0 << "int32_t *reps_" << buf_idx_ << " = malloc(" << reps.size() << " * 4)";
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   for (uint k = 0; k < reps.size(); k++) {
     t0 << "reps_" << buf_idx_ << "[" << k << "] = " << Downcast<IndexExpr>(reps[k]);
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
   }
 
-  malloc_params("reps_params", params_name);
+  malloc_params("csinn_tile_params", params_name);
   t0 << params_name << "->reps = reps_" << buf_idx_;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
   params_common_setup(decl, call, "tile", params_name + ".tile", attr->layer_name.c_str());
   end_stream(decl, "tile");
@@ -3482,23 +3556,24 @@ void CodegenCSINN::Tile(const CallNode* call) {
 void CodegenCSINN::DepthToSpace(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSISubPixelAttrs>();
   int block_size = attr->block_size;
   string mode = attr->mode;
-  SisoOp<QnnCSISubPixelAttrs>(decl, call, attr, "depth_to_space");
+  SisoOp<QnnCSISubPixelAttrs>(op, decl, call, attr, "depth_to_space");
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-
-  malloc_params("depth_to_space_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_depth_to_space_params", params_name);
   t0 << params_name << "->block_size = " << to_string(block_size);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   if (mode == "DCR") {
     t0 << params_name << "->mode = CSINN_DEPTHTOSPACE_DCR";
   } else if (mode == "CDR") {
     t0 << params_name << "->mode = CSINN_DEPTHTOSPACE_CRD";
   }
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
   params_common_setup(decl, call, "depth_to_space", params_name, attr->layer_name.c_str());
   end_stream(decl, "depth_to_space");
@@ -3508,16 +3583,17 @@ void CodegenCSINN::DepthToSpace(const CallNode* call) {
 void CodegenCSINN::SpaceToDepth(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSISubPixelAttrs>();
   int block_size = attr->block_size;
-  SisoOp<QnnCSISubPixelAttrs>(decl, call, attr, "space_to_depth");
+  SisoOp<QnnCSISubPixelAttrs>(op, decl, call, attr, "space_to_depth");
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-
-  malloc_params("space_to_depth_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_space_to_depth_params", params_name);
   t0 << params_name << "->block_size = " << to_string(block_size);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
   params_common_setup(decl, call, "space_to_depth", params_name, attr->layer_name.c_str());
   end_stream(decl, "space_to_depth");
@@ -3527,15 +3603,16 @@ void CodegenCSINN::SpaceToDepth(const CallNode* call) {
 void CodegenCSINN::Relu6(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSIUnaryAttrs>();
-  SisoOp<QnnCSIUnaryAttrs>(decl, call, attr, "relu6");
+  SisoOp<QnnCSIUnaryAttrs>(op, decl, call, attr, "relu6");
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-
-  malloc_params("relu_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_relu_params", params_name);
   t0 << params_name << "->n = 6";
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
   params_common_setup(decl, call, "relu6", params_name, attr->layer_name.c_str());
   end_stream(decl, "relu6");
@@ -3545,6 +3622,7 @@ void CodegenCSINN::Relu6(const CallNode* call) {
 void CodegenCSINN::PRelu(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSIPReluAttrs>();
   CHECK(attr);
   CHECK(call->args.size() == 2) << "PRelu expects 2 args";
@@ -3557,7 +3635,7 @@ void CodegenCSINN::PRelu(const CallNode* call) {
   CHECK(out_.size() == 1) << "Every args expects a single out_";
   string complete_name = get_complete_layer_name("prelu", attr->layer_name.c_str());
   bool is_layer_hybrid = is_contain_item<string>(hybrid_layer_name, complete_name);
-  string input_name = HybridInputTensor(decl, call, 0, attr->q_params, 0, is_layer_hybrid);
+  string input_name = HybridInputTensor(op, decl, call, 0, attr->q_params, 0, is_layer_hybrid);
 
   /* Emit kernel tensor */
   VisitExpr(call->args[1]);
@@ -3565,19 +3643,21 @@ void CodegenCSINN::PRelu(const CallNode* call) {
   auto alpha = constant_[0];
   auto wshape = GetShape(call->args[1]->checked_type());
   string alpha_name = "alpha_" + to_string(buf_idx_);
-  CreateHybridConstantTensor(&alpha, alpha_name, wshape, attr->q_params, 1, is_layer_hybrid);
+  CreateHybridConstantTensor(op, &alpha, alpha_name, wshape, attr->q_params, 1, is_layer_hybrid);
   decl << ", " << alpha_name;
 
   /* Emit output tensor */
-  string output_name = HybridOutputTensor(decl, call, attr->q_params, 2, is_layer_hybrid);
+  string output_name = HybridOutputTensor(op, decl, call, attr->q_params, 2, is_layer_hybrid);
   output2params[output_name] = complete_name;
+
+  collect_quant_info(complete_name, attr->q_params, 2);
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-
-  malloc_params("prelu_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_prelu_params", params_name);
   t0 << params_name << "->axis = " << to_string(attr->axis);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
   if (is_layer_hybrid) {
     PushOutput(output_name, call, hybrid_cfg->dtype_weight);
@@ -3592,6 +3672,7 @@ void CodegenCSINN::PRelu(const CallNode* call) {
 void CodegenCSINN::LeakyRelu(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSILeakyReluAttrs>();
   CHECK(attr);
   double alpha = attr->alpha;
@@ -3605,11 +3686,13 @@ void CodegenCSINN::LeakyRelu(const CallNode* call) {
   CHECK(out_.size() == 1) << "Every args expects a single out_";
   string complete_name = get_complete_layer_name("leaky_relu", attr->layer_name.c_str());
   bool is_layer_hybrid = is_contain_item<string>(hybrid_layer_name, complete_name);
-  string input_name = HybridInputTensor(decl, call, 0, attr->q_params, 0, is_layer_hybrid);
+  string input_name = HybridInputTensor(op, decl, call, 0, attr->q_params, 0, is_layer_hybrid);
 
   /* Emit output tensor */
-  string output_name = HybridOutputTensor(decl, call, attr->q_params, 1, is_layer_hybrid);
+  string output_name = HybridOutputTensor(op, decl, call, attr->q_params, 1, is_layer_hybrid);
   output2params[output_name] = complete_name;
+
+  collect_quant_info(complete_name, attr->q_params, 1);
 
   buf_idx_++;
 
@@ -3619,14 +3702,15 @@ void CodegenCSINN::LeakyRelu(const CallNode* call) {
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-  malloc_params("relu_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_relu_params", params_name);
 
   t0 << params_name << "->n = " << to_string(attr->alpha);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->n_multiplier = " << to_string(alpha_multiplier);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->n_shift = " << to_string(alpha_shift);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
   if (is_layer_hybrid) {
     PushOutput(output_name, call, hybrid_cfg->dtype_weight);
@@ -3641,6 +3725,7 @@ void CodegenCSINN::LeakyRelu(const CallNode* call) {
 void CodegenCSINN::Concat(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnConcatenateAttrs>();
   CHECK(attr);
   QuantParams* q_params = GetQuantParams(attr->q_params);
@@ -3654,8 +3739,8 @@ void CodegenCSINN::Concat(const CallNode* call) {
   int32_t input_num = tuple->fields.size();
 
   string input_name = "input_" + to_string(buf_idx_);
-  t0 << "struct csi_tensor *" << input_name << "[" << input_num << "]";
-  PushDeclLine(t0);
+  t0 << "struct csinn_tensor *" << input_name << "[" << input_num << "]";
+  func_def_.PushDecl(t0);
   std::map<int, string> free_tensor;
 
   for (int i = 0; i < input_num; i++) {
@@ -3663,14 +3748,14 @@ void CodegenCSINN::Concat(const CallNode* call) {
     if (auto sub_input_node = tuple->fields[i].as<tvm::relay::CallNode>()) {
       auto sub_input = GetRealInput(sub_input_node);
       CHECK(sub_input.need_copy == true);
-      mem_stream << input_name << "[" << i << "] = " << sub_input.name << ";";
+      mem_stream << input_name << "[" << i << "] = " << sub_input.name;
       free_tensor[i] = sub_input.name;
     } else if (auto sub_input_var_node = tuple->fields[i].as<tvm::relay::VarNode>()) {
-      string var_name = InputTensorVar(sub_input_var_node, i, q_params[i], cfg->dtype_weight);
-      mem_stream << input_name << "[" << i << "] = " << var_name << ";";
+      string var_name = InputTensorVar(op, sub_input_var_node, i, q_params[i], cfg->dtype_weight);
+      mem_stream << input_name << "[" << i << "] = " << var_name;
     } else if (auto sub_input_item_node = tuple->fields[i].as<tvm::relay::TupleGetItemNode>()) {
       string item_name = InputTensorTupleItem(sub_input_item_node, q_params[i], cfg->dtype_weight);
-      mem_stream << input_name << "[" << i << "] = " << item_name << ";";
+      mem_stream << input_name << "[" << i << "] = " << item_name;
       free_tensor[i] = item_name;
     } else {
       auto sub_input_const_node = tuple->fields[i].as<tvm::relay::ConstantNode>();
@@ -3683,26 +3768,29 @@ void CodegenCSINN::Concat(const CallNode* call) {
       sub_input_const_node->data.CopyToBytes(const_out->data_buf, const_out->size);
       auto const_name = const_out->name + "_" + to_string(i);
       auto const_shape = GetShape(sub_input_const_node->checked_type());
-      CreateConstantTensor(const_out, const_name, const_shape, cfg->dtype_weight, q_params[i]);
-      mem_stream << input_name << "[" << i << "] = " << const_name << ";";
+      CreateConstantTensor(op, const_out, const_name, const_shape, cfg->dtype_weight, q_params[i]);
+      mem_stream << input_name << "[" << i << "] = " << const_name;
     }
-    ext_func_body.push_back(mem_stream.str());
+    func_def_.PushCall(mem_stream);
   }
   decl << input_name;
 
   /* Emit output tensor */
   string output_name =
-      OutputTensor(decl, call, q_params[attr->q_params.size() - 1], cfg->dtype_weight);
+      OutputTensor(op, decl, call, q_params[attr->q_params.size() - 1], cfg->dtype_weight);
+
+  string complete_name = get_complete_layer_name("concat", attr->layer_name.c_str());
+  collect_quant_info(complete_name, attr->q_params, attr->q_params.size() - 1);
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-
-  malloc_params("concat_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_concat_params", params_name);
 
   t0 << params_name << "->inputs_count = " << to_string(input_num);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->axis = " << to_string(attr->axis);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   PushOutput(output_name, call);
 
   params_common_setup(decl, call, "concat", params_name, attr->layer_name.c_str());
@@ -3715,45 +3803,47 @@ void CodegenCSINN::Concat(const CallNode* call) {
 void CodegenCSINN::LRN(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSILRNAttrs>();
-  SisoOp<QnnCSILRNAttrs>(decl, call, attr, "lrn");
+  SisoOp<QnnCSILRNAttrs>(op, decl, call, attr, "lrn");
   int32_t multiplier, shift;
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-  malloc_params("lrn_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_lrn_params", params_name);
 
   /* range */
   t0 << params_name << "->range = " << to_string(attr->size);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->norm_region = CSINN_LRN_" << attr->norm_region;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   /* bias */
   GetMultiplierAndShift(attr->bias, &multiplier, &shift);
   t0 << params_name << "->bias = " << to_string(attr->bias);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->bias_multiplier = " << to_string(multiplier);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->bias_shift = " << to_string(shift);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
   /* alpha */
   GetMultiplierAndShift(attr->alpha, &multiplier, &shift);
   t0 << params_name << "->alpha = " << to_string(attr->alpha);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->alpha_multiplier = " << to_string(multiplier);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->alpha_shift = " << to_string(shift);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
   /* beta */
   GetMultiplierAndShift(attr->beta, &multiplier, &shift);
   t0 << params_name << "->beta = " << to_string(attr->beta);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->beta_multiplier = " << to_string(multiplier);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->beta_shift = " << to_string(shift);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
   params_common_setup(decl, call, "lrn", params_name, attr->layer_name.c_str());
   end_stream(decl, "lrn");
@@ -3763,14 +3853,15 @@ void CodegenCSINN::LRN(const CallNode* call) {
 void CodegenCSINN::Flatten(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSIUnaryAttrs>();
   CHECK(attr);
-  SisoOp<QnnCSIUnaryAttrs>(decl, call, attr, "flatten");
+  SisoOp<QnnCSIUnaryAttrs>(op, decl, call, attr, "flatten");
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-
-  malloc_params("flatten_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_flatten_params", params_name);
 
   params_common_setup(decl, call, "flatten", params_name, attr->layer_name.c_str());
   end_stream(decl, "flatten");
@@ -3780,14 +3871,15 @@ void CodegenCSINN::Flatten(const CallNode* call) {
 void CodegenCSINN::Sigmoid(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSIUnaryAttrs>();
   CHECK(attr);
-  SisoOp<QnnCSIUnaryAttrs>(decl, call, attr, "sigmoid");
+  SisoOp<QnnCSIUnaryAttrs>(op, decl, call, attr, "sigmoid");
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-
-  malloc_params("sigmoid_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_sigmoid_params", params_name);
 
   params_common_setup(decl, call, "sigmoid", params_name, attr->layer_name.c_str());
   end_stream(decl, "sigmoid");
@@ -3798,6 +3890,7 @@ void CodegenCSINN::Transpose(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream pstream;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attrs = call->attrs.as<QnnCSITransposeAttrs>();
   CHECK(attrs);
 
@@ -3809,26 +3902,31 @@ void CodegenCSINN::Transpose(const CallNode* call) {
   /* Emit_ input tensor */
   VisitExpr(call->args[0]);
   CHECK(out_.size() == 1) << "Every args expects a single out_";
-  string input_name = InputTensor(decl, call, 0, q_params[0], cfg->dtype_weight);
+  string input_name = InputTensor(op, decl, call, 0, q_params[0], cfg->dtype_weight);
 
   string perm_name = "permute_" + to_string(buf_idx_);
   int32_t perm_size = attrs->axes.size();
 
   t0 << "int32_t *" << perm_name << " = malloc(" << perm_size << " * 4)";
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   for (int i = 0; i < perm_size; i++) {
     t0 << perm_name << "[" << i << "] = " << to_string(attrs->axes[i].as<IntImmNode>()->value);
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
   }
 
-  string output_name = OutputTensor(decl, call, q_params[1], cfg->dtype_weight);
+  string output_name = OutputTensor(op, decl, call, q_params[1], cfg->dtype_weight);
+
+  string complete_name = get_complete_layer_name("transpose", attrs->layer_name.c_str());
+  collect_quant_info(complete_name, attrs->q_params, 1);
+
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-  malloc_params("transpose_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_transpose_params", params_name);
   t0 << params_name << "->permute = " << perm_name;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->permute_num = " << to_string(perm_size);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
   PushOutput(output_name, call);
   params_common_setup(decl, call, "transpose", params_name, attrs->layer_name.c_str());
@@ -3839,27 +3937,29 @@ void CodegenCSINN::Transpose(const CallNode* call) {
 void CodegenCSINN::Reshape(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSIReshapeAttrs>();
-  SisoOp<QnnCSIReshapeAttrs>(decl, call, attr, "reshape");
+  SisoOp<QnnCSIReshapeAttrs>(op, decl, call, attr, "reshape");
 
   auto out_shape = GetShape(call->checked_type());
   string new_shape_name = "shape_" + to_string(buf_idx_);
   int32_t new_shape_dim_num = out_shape.size();
   t0 << "int32_t *" << new_shape_name << " = malloc(" << new_shape_dim_num << " * 4)";
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   for (int i = 0; i < new_shape_dim_num; i++) {
     t0 << new_shape_name << "[" << i << "] = " << to_string(out_shape[i]);
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
   }
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-  malloc_params("reshape_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_reshape_params", params_name);
 
   t0 << params_name << "->shape = " << new_shape_name;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->shape_num = " << new_shape_dim_num;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   params_common_setup(decl, call, "reshape", params_name, attr->layer_name.c_str());
 
   end_stream(decl, "reshape");
@@ -3869,22 +3969,23 @@ void CodegenCSINN::Reshape(const CallNode* call) {
 void CodegenCSINN::BroadCastTo(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSIBroadCastToAttrs>();
-  SisoOp<QnnCSIBroadCastToAttrs>(decl, call, attr, "broadcast_to");
+  SisoOp<QnnCSIBroadCastToAttrs>(op, decl, call, attr, "broadcast_to");
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-
-  malloc_params("broadcast_to_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_broadcast_to_params", params_name);
   t0 << params_name << "->shape = malloc(" << attr->shape.size() << " * 4)";
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   for (uint i = 0; i < attr->shape.size(); i++) {
     t0 << params_name << "->shape[" << i
        << "] = " << to_string(attr->shape[i].as<IntImmNode>()->value);
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
   }
   t0 << params_name << "->shape_count = " << attr->shape.size();
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
   params_common_setup(decl, call, "broadcast_to", params_name, attr->layer_name.c_str());
   end_stream(decl, "broadcast_to");
@@ -3894,8 +3995,9 @@ void CodegenCSINN::BroadCastTo(const CallNode* call) {
 void CodegenCSINN::Squeeze(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSISqueezeAttrs>();
-  SisoOp<QnnCSISqueezeAttrs>(decl, call, attr, "squeeze");
+  SisoOp<QnnCSISqueezeAttrs>(op, decl, call, attr, "squeeze");
 
   string squeeze_axis_name = "squeeze_aixs_" + to_string(buf_idx_);
   int32_t squeeze_axis_dim_num = attr->axis.size();
@@ -3904,16 +4006,16 @@ void CodegenCSINN::Squeeze(const CallNode* call) {
     t0 << to_string(attr->axis[i].as<IntImmNode>()->value) << ", ";
   }
   t0 << "}";
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-
-  malloc_params("squeeze_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_squeeze_params", params_name);
   t0 << params_name << "->axis = " << squeeze_axis_name;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->axis_num = " << squeeze_axis_dim_num;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   params_common_setup(decl, call, "squeeze", params_name, attr->layer_name.c_str());
   end_stream(decl, "squeeze");
   FreeTensor(call->args[0], siso_input_name);
@@ -3925,6 +4027,7 @@ void CodegenCSINN::Segment(const CallNode* call, string name) {
   QuantParams* q_params = GetQuantParams(attr->q_params);
   std::ostringstream decl;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
 
   CHECK(call->args.size() == 2) << "op expects 2 args";
 
@@ -3936,7 +4039,7 @@ void CodegenCSINN::Segment(const CallNode* call, string name) {
   CHECK(out_.size() == 1) << "Every args expects a single out_";
   string complete_name = get_complete_layer_name("segment_" + name, attr->layer_name.c_str());
   bool is_layer_hybrid = is_contain_item<string>(hybrid_layer_name, complete_name);
-  string input_name = HybridInputTensor(decl, call, 0, attr->q_params, 0, is_layer_hybrid);
+  string input_name = HybridInputTensor(op, decl, call, 0, attr->q_params, 0, is_layer_hybrid);
 
   /* Emit idx tensor */
   VisitExpr(call->args[1]);
@@ -3944,12 +4047,14 @@ void CodegenCSINN::Segment(const CallNode* call, string name) {
   auto idx = constant_[0];
   auto ishape = GetShape(call->args[1]->checked_type());
   string idx_name = "idx_" + to_string(buf_idx_);
-  CreateConstantTensor(&idx, idx_name, ishape, "int32_t", q_params[1]);
+  CreateConstantTensor(op, &idx, idx_name, ishape, "int32_t", q_params[1]);
   decl << ", " << idx_name;
 
   /* Emit output tensor */
-  string output_name = HybridOutputTensor(decl, call, attr->q_params, 2, is_layer_hybrid);
+  string output_name = HybridOutputTensor(op, decl, call, attr->q_params, 2, is_layer_hybrid);
   output2params[output_name] = complete_name;
+
+  collect_quant_info(complete_name, attr->q_params, 2);
 
   if (is_layer_hybrid) {
     PushOutput(output_name, call, hybrid_cfg->dtype_weight);
@@ -3959,8 +4064,8 @@ void CodegenCSINN::Segment(const CallNode* call, string name) {
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-
-  malloc_params("segment_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_segment_params", params_name);
 
   params_common_setup(decl, call, "segment_" + name, params_name, attr->layer_name.c_str());
   end_stream(decl, "segment_" + name);
@@ -3973,6 +4078,7 @@ void CodegenCSINN::ScatterND(const CallNode* call) {
   QuantParams* q_params = GetQuantParams(attr->q_params);
   std::ostringstream decl;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
 
   CHECK(call->args.size() == 3) << "op expects 3 args";
 
@@ -3982,7 +4088,7 @@ void CodegenCSINN::ScatterND(const CallNode* call) {
   /* Emit input tensor */
   VisitExpr(call->args[0]);
   CHECK(out_.size() == 1) << "Every args expects a single out_";
-  string input_name = InputTensor(decl, call, 0, q_params[0], cfg->dtype_weight);
+  string input_name = InputTensor(op, decl, call, 0, q_params[0], cfg->dtype_weight);
 
   /* Emit idx tensor */
   VisitExpr(call->args[1]);
@@ -3990,22 +4096,25 @@ void CodegenCSINN::ScatterND(const CallNode* call) {
   auto idx = constant_[0];
   auto ishape = GetShape(call->args[1]->checked_type());
   string idx_name = "idx_" + to_string(buf_idx_);
-  CreateConstantTensor(&idx, idx_name, ishape, "int32_t", q_params[1]);
+  CreateConstantTensor(op, &idx, idx_name, ishape, "int32_t", q_params[1]);
   decl << ", " << idx_name << ", ";
 
   VisitExpr(call->args[2]);
   CHECK(out_.size() == 1) << "Every args expects a single out_";
-  string updates_name = InputTensor(decl, call, 2, q_params[2], cfg->dtype_weight);
+  string updates_name = InputTensor(op, decl, call, 2, q_params[2], cfg->dtype_weight);
 
   /* Emit output tensor */
-  string output_name = OutputTensor(decl, call, q_params[3], cfg->dtype_weight);
+  string output_name = OutputTensor(op, decl, call, q_params[3], cfg->dtype_weight);
+
+  string complete_name = get_complete_layer_name("scatter_nd", attr->layer_name.c_str());
+  collect_quant_info(complete_name, attr->q_params, 3);
 
   PushOutput(output_name, call);
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-
-  malloc_params("scatter_nd_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_scatter_nd_params", params_name);
 
   params_common_setup(decl, call, "scatter_nd", params_name, attr->layer_name.c_str());
   end_stream(decl, "scatter_nd");
@@ -4015,6 +4124,7 @@ void CodegenCSINN::ScatterND(const CallNode* call) {
 void CodegenCSINN::Reduce(const CallNode* call, string name, string out_dtype) {
   std::ostringstream decl;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
 
   const auto* attr = call->attrs.as<QnnCSIReduceAttrs>();
   CHECK(attr);
@@ -4032,10 +4142,12 @@ void CodegenCSINN::Reduce(const CallNode* call, string name, string out_dtype) {
 
   CHECK(out_.size() == 1) << "Every args expects a single out_";
   decl << "(";
-  // string input_name = InputTensor(decl, call, 0, q_params[0], cfg->dtype_weight);
-  string input_name = HybridInputTensor(decl, call, 0, attr->q_params, 0, is_layer_hybrid);
+  // string input_name = InputTensor(op, decl, call, 0, q_params[0], cfg->dtype_weight);
+  string input_name = HybridInputTensor(op, decl, call, 0, attr->q_params, 0, is_layer_hybrid);
 
-  string output_name = HybridOutputTensor(decl, call, attr->q_params, 1, is_layer_hybrid);
+  string output_name = HybridOutputTensor(op, decl, call, attr->q_params, 1, is_layer_hybrid);
+
+  collect_quant_info(complete_name, attr->q_params, 1);
 
   output2params[output_name] = complete_name;
 
@@ -4065,63 +4177,69 @@ void CodegenCSINN::Reduce(const CallNode* call, string name, string out_dtype) {
   }
 
   t0 << "int32_t *out_strides_" << buf_idx_ << " = malloc(" << out_strides.size() << " * 4)";
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << "int32_t *out_extents_" << buf_idx_ << " = malloc(" << out_extents.size() << " * 4)";
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   for (uint i = 0; i < out_strides.size(); i++) {
     t0 << "out_strides_" << buf_idx_ << "[" << i << "] = " << to_string(out_strides[i]);
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
   }
   for (uint i = 0; i < out_extents.size(); i++) {
     t0 << "out_extents_" << buf_idx_ << "[" << i << "] = " << to_string(out_extents[i]);
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
   }
 
   t0 << "int32_t *inner_strides_" << buf_idx_ << " = malloc(" << inner_strides.size() << " * 4)";
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << "int32_t *inner_extents_" << buf_idx_ << " = malloc(" << inner_extents.size() << " * 4)";
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   for (uint i = 0; i < inner_strides.size(); i++) {
     t0 << "inner_strides_" << buf_idx_ << "[" << i << "] = " << to_string(inner_strides[i]);
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
   }
   for (uint i = 0; i < inner_extents.size(); i++) {
     t0 << "inner_extents_" << buf_idx_ << "[" << i << "] = " << to_string(inner_extents[i]);
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
   }
 
   t0 << "int32_t *aixs_" << buf_idx_ << " = malloc(" << axis.size() << " * 4)";
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   for (uint i = 0; i < axis.size(); i++) {
     t0 << "aixs_" << buf_idx_ << "[" << i << "] = " << to_string(axis[i].as<IntImmNode>()->value);
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
   }
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-
-  malloc_params("reduce_params", params_name);
+  if (name == "argmax" || name == "argmin") {
+    CSINNTensor* i32out = op->get_tensor(output_name);
+    i32out->tensor->dtype = CSINN_DTYPE_INT32;
+  }
+  push_decl(op);
+  malloc_params("csinn_reduce_params", params_name);
   t0 << params_name << "->out_strides = out_strides_" << buf_idx_;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->out_extents = out_extents_" << buf_idx_;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->n = " << to_string(out_extents.size());
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->inner_strides = inner_strides_" << buf_idx_;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->inner_extents = inner_extents_" << buf_idx_;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->m = " << to_string(inner_extents.size());
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->axis = aixs_" << buf_idx_;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->axis_count = " << axis.size();
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   if (attr->keepdims) {
     t0 << params_name << "->keepdims = true";
   }
-  PushDeclLine(t0);
-  if (is_layer_hybrid) {
+  func_def_.PushDecl(t0);
+  if (name == "argmax" || name == "argmin") {
+    PushOutput(output_name, call, "int32_t");
+  } else if (is_layer_hybrid) {
     PushOutput(output_name, call, hybrid_cfg->dtype_weight);
   } else {
     PushOutput(output_name, call, cfg->dtype_weight);
@@ -4134,6 +4252,7 @@ void CodegenCSINN::Reduce(const CallNode* call, string name, string out_dtype) {
 void CodegenCSINN::CropResize(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSICropResizeAttrs>();
   CHECK(attr);
   QuantParams* q_params = GetQuantParams(attr->q_params);
@@ -4147,10 +4266,13 @@ void CodegenCSINN::CropResize(const CallNode* call) {
   /* Emit_ input tensor */
   VisitExpr(call->args[0]);
   CHECK(out_.size() == 1) << "Every args expects a single out_";
-  string input_name = InputTensor(decl, call, 0, q_params[0], cfg->dtype_weight);
+  string input_name = InputTensor(op, decl, call, 0, q_params[0], cfg->dtype_weight);
 
   /* Emit output tensor */
-  string output_name = OutputTensor(decl, call, q_params[3], cfg->dtype_weight);
+  string output_name = OutputTensor(op, decl, call, q_params[3], cfg->dtype_weight);
+
+  string complete_name = get_complete_layer_name("crop_resize", attr->layer_name.c_str());
+  collect_quant_info(complete_name, attr->q_params, 3);
 
   /* Emit boxes tensor */
   VisitExpr(call->args[1]);
@@ -4158,7 +4280,7 @@ void CodegenCSINN::CropResize(const CallNode* call) {
   auto boxes = constant_[0];
   auto bshape = GetShape(call->args[1]->checked_type());
   string boxes_name = "boxes_" + to_string(buf_idx_);
-  CreateConstantTensor(&boxes, boxes_name, bshape, "int32_t", q_params[1]);
+  CreateConstantTensor(op, &boxes, boxes_name, bshape, "int32_t", q_params[1]);
   decl << ", " << boxes_name;
 
   /* Emit bias tensor */
@@ -4167,27 +4289,27 @@ void CodegenCSINN::CropResize(const CallNode* call) {
   auto box_indices = constant_[0];
   auto index_shape = GetShape(call->args[2]->checked_type());
   string index_name = "index_" + to_string(buf_idx_);
-  CreateConstantTensor(&box_indices, index_name, index_shape, "int32_t", q_params[2]);
+  CreateConstantTensor(op, &box_indices, index_name, index_shape, "int32_t", q_params[2]);
   decl << ", " << index_name;
 
   string params_name = "params_" + to_string(buf_idx_);
 
   decl << ", " << params_name << ")";
-
+  push_decl(op);
   t0 << "  int32_t crop_size_" << buf_idx_ << "[" << crop_size.size() << "] = {";
   for (uint i = 0; i < crop_size.size(); i++) {
     t0 << Downcast<IndexExpr>(crop_size[i]) << ", ";
   }
   t0 << "}";
-  PushDeclLine(t0);
-  malloc_params("crop_resize_params", params_name);
+  func_def_.PushDecl(t0);
+  malloc_params("csinn_crop_resize_params", params_name);
 
   t0 << params_name << "->method = " << method;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->extrapolation_value = " << extrapolation_value;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->crop_size = crop_size_" << buf_idx_;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
   PushOutput(output_name, call);
   params_common_setup(decl, call, "crop_resize", params_name, attr->layer_name.c_str());
@@ -4198,6 +4320,7 @@ void CodegenCSINN::CropResize(const CallNode* call) {
 void CodegenCSINN::StridedSlice(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream t0, t1;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSIStridedSliceAttrs>();
   CHECK(attr);
   QuantParams* q_params = GetQuantParams(attr->q_params);
@@ -4211,24 +4334,27 @@ void CodegenCSINN::StridedSlice(const CallNode* call) {
   CHECK(out_.size() == 1) << "Every args expects a single out_";
 
   decl << "(";
-  string input_name = InputTensor(decl, call, 0, q_params[0], cfg->dtype_weight);
+  string input_name = InputTensor(op, decl, call, 0, q_params[0], cfg->dtype_weight);
 
-  string output_name = OutputTensor(decl, call, q_params[1], cfg->dtype_weight);
+  string output_name = OutputTensor(op, decl, call, q_params[1], cfg->dtype_weight);
+
+  string complete_name = get_complete_layer_name("strided_slice", attr->layer_name.c_str());
+  collect_quant_info(complete_name, attr->q_params, 1);
 
   t0 << "int32_t *begin_" << buf_idx_ << " = malloc(" << begin.size() << " * 4)";
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << "int32_t *end_" << buf_idx_ << " = malloc(" << end.size() << " * 4)";
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   for (uint i = 0; i < begin.size(); i++) {
     t0 << "begin_" << buf_idx_ << "[" << i << "] = " << to_string(begin[i]);
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
   }
   auto ishape = GetShape(call->args[0]->checked_type());
   for (uint i = 0; i < end.size(); i++) {
     int end_ =
         end[i].as<IntImmNode>()->value > ishape[i] ? ishape[i] : end[i].as<IntImmNode>()->value;
     t0 << "end_" << buf_idx_ << "[" << i << "] = " << to_string(end_);
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
   }
 
   uint stride_size = strides.size();
@@ -4237,30 +4363,30 @@ void CodegenCSINN::StridedSlice(const CallNode* call) {
   }
 
   t0 << "int32_t *strides_" << buf_idx_ << " = malloc(" << stride_size << " * 4)";
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
   for (uint i = 0; i < stride_size; i++) {
     if (i < strides.size()) {
       t0 << "strides_" << buf_idx_ << "[" << i << "] = " << to_string(strides[i]);
-      PushDeclLine(t0);
+      func_def_.PushDecl(t0);
     } else {
       t0 << "strides_" << buf_idx_ << "[" << i << "] = " << to_string(strides[0]);
-      PushDeclLine(t0);
+      func_def_.PushDecl(t0);
     }
   }
 
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-
-  malloc_params("strided_slice_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_strided_slice_params", params_name);
   t0 << params_name << "->begin = begin_" << buf_idx_;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->end = end_" << buf_idx_;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->stride = strides_" << buf_idx_;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->slice_count = " << begin.size();
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
   PushOutput(output_name, call);
   params_common_setup(decl, call, "strided_slice", params_name, attr->layer_name.c_str());
@@ -4271,7 +4397,7 @@ void CodegenCSINN::StridedSlice(const CallNode* call) {
 void CodegenCSINN::Split(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream t0;
-
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSISplitAttrs>();
   CHECK(attr);
   QuantParams* q_params = GetQuantParams(attr->q_params);
@@ -4283,15 +4409,17 @@ void CodegenCSINN::Split(const CallNode* call) {
   CHECK(out_.size() == 1) << "Every args expects a single out_";
 
   string out_name = "output_" + to_string(buf_idx_);
-  t0 << "struct csi_tensor *" << out_name << "[" << attr->q_params.size() - 1 << "]";
-  PushDeclLine(t0);
+  t0 << "struct csinn_tensor *" << out_name << "[" << attr->q_params.size() - 1 << "]";
+  func_def_.PushDecl(t0);
   decl << "(";
-  string input_name = InputTensor(decl, call, 0, q_params[0], cfg->dtype_weight);
+  string input_name = InputTensor(op, decl, call, 0, q_params[0], cfg->dtype_weight);
   auto in_shape = GetShape(call->args[0]->checked_type());
 
   decl << ", " << out_name << ", ";
   string params_name = "params_" + to_string(buf_idx_);
   decl << params_name << ")";
+
+  string complete_name = get_complete_layer_name("split", attr->layer_name.c_str());
 
   std::vector<string> out_names;
   for (uint i = 0; i < attr->q_params.size() - 1; i++) {
@@ -4308,57 +4436,62 @@ void CodegenCSINN::Split(const CallNode* call) {
     if (cfg->dtype_weight == "float16" || cfg->dtype_weight == "bfloat16" ||
         cfg->dtype_weight == "int16_t") {
       out_size = out_size * 2;
+    } else if (cfg->dtype_weight == "float" || cfg->dtype_weight == "float32") {
+      out_size *= 4;
     }
     malloc_buf(out, out_size);
     alloc_idx_++;
     string output_name = "output_" + to_string(buf_idx_) + "_" + to_string(i);
-    CreateTensor(output_name, out, out_shape, q_params[i + 1], cfg->dtype_weight);
+    CSINNVarTensor* ret =
+        CreateTensor(output_name, out, out_shape, q_params[i + 1], cfg->dtype_weight);
+
+    collect_quant_info(complete_name, attr->q_params, i + 1);
 
     t0 << out_name << "[" << to_string(i) << "] = " << output_name;
-    PushDeclLine(t0);
-
+    ret->append_str(t0);
+    op->push_output(ret);
     out_names.push_back(output_name);
   }
-
+  push_decl(op);
   Array<Integer> indices_or_sections;
   if (const IntImmNode* sections = attr->indices_or_sections.as<IntImmNode>()) {
     axis = axis == -1 ? in_shape.size() - 1 : axis;
     t0 << "int32_t axis_len" << buf_idx_ << " = ";
     t0 << input_name << "->dim[" << axis << "]";
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
 
     t0 << "int32_t index_" << buf_idx_ << " = ";
     t0 << "axis_len" << buf_idx_ << " / " << sections->value;
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
 
     t0 << "int32_t *indices_or_sections_" << buf_idx_ << " = malloc(sizeof(int32_t) * "
        << sections->value - 1 << ")";
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
     for (int x = 1; x < sections->value; x++) {
       t0 << "indices_or_sections_" << buf_idx_ << "[" << x - 1 << "] = index_" << buf_idx_ << " * "
          << x;
-      PushDeclLine(t0);
+      func_def_.PushDecl(t0);
     }
   } else {
     auto indices_ = Downcast<Array<ObjectRef>>(attr->indices_or_sections);
     t0 << "int32_t *indices_or_sections_" << buf_idx_ << " = malloc(sizeof(int32_t) * "
        << indices_.size() << ")";
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
     for (uint32_t k = 0; k < indices_.size(); k++) {
       auto idx = Downcast<IndexExpr>(indices_[k]);
       t0 << "indices_or_sections_" << buf_idx_ << "[" << k
          << "] = " << to_string(*tir::as_const_int(idx)) << ";";
-      PushDeclLine(t0);
+      func_def_.PushDecl(t0);
     }
   }
 
-  malloc_params("split_params", params_name);
+  malloc_params("csinn_split_params", params_name);
   t0 << params_name << "->split_index = indices_or_sections_" << buf_idx_;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->output_num = " << attr->q_params.size() - 1;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->axis = " << to_string(axis);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
   PushOutput(out_names, call);
   params_common_setup(decl, call, "split", params_name, attr->layer_name.c_str());
@@ -4370,6 +4503,7 @@ void CodegenCSINN::BatchToSpaceND(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream pstream;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attrs = call->attrs.as<QnnCSIBatchToSpaceNDAttrs>();
   CHECK(attrs);
 
@@ -4384,7 +4518,7 @@ void CodegenCSINN::BatchToSpaceND(const CallNode* call) {
   bool is_layer_hybrid = is_contain_item<string>(hybrid_layer_name, complete_name);
 
   CHECK(out_.size() == 1) << "Every args expects a single out_";
-  string input_name = HybridInputTensor(decl, call, 0, attrs->q_params, 0, is_layer_hybrid);
+  string input_name = HybridInputTensor(op, decl, call, 0, attrs->q_params, 0, is_layer_hybrid);
 
   string block_shape_name = "block_shape_" + to_string(buf_idx_);
   string crops_name = "crops_" + to_string(buf_idx_);
@@ -4396,7 +4530,7 @@ void CodegenCSINN::BatchToSpaceND(const CallNode* call) {
     t0 << to_string(attrs->block_shape[i].as<IntImmNode>()->value) << ", ";
   }
   t0 << "}";
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
   // Emit crops
   t0 << "int32_t " << crops_name << "[" << spatial_dim_cnt * 2 << "] = {";
@@ -4405,20 +4539,24 @@ void CodegenCSINN::BatchToSpaceND(const CallNode* call) {
     t0 << to_string(attrs->crops[i][1].as<IntImmNode>()->value) << ", ";
   }
   t0 << "}";
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
-  string output_name = HybridOutputTensor(decl, call, attrs->q_params, 1, is_layer_hybrid);
+  string output_name = HybridOutputTensor(op, decl, call, attrs->q_params, 1, is_layer_hybrid);
+
+  collect_quant_info(complete_name, attrs->q_params, 1);
+
   string params_name = "params_" + to_string(buf_idx_);
   output2params[output_name] = complete_name;
   decl << ", " << params_name << ")";
-  malloc_params("batch_to_space_nd_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_batch_to_space_nd_params", params_name);
 
   t0 << params_name << "->crops = " << crops_name;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->block_shape = " << block_shape_name;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->spatial_dim_cnt = " << to_string(spatial_dim_cnt);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
   if (is_layer_hybrid) {
     PushOutput(output_name, call, hybrid_cfg->dtype_weight);
@@ -4434,6 +4572,7 @@ void CodegenCSINN::SpaceToBatchND(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream pstream;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attrs = call->attrs.as<QnnCSISpaceToBatchNDAttrs>();
   CHECK(attrs);
 
@@ -4445,7 +4584,7 @@ void CodegenCSINN::SpaceToBatchND(const CallNode* call) {
   /* Emit_ input tensor */
   VisitExpr(call->args[0]);
   CHECK(out_.size() == 1) << "Every args expects a single out_";
-  string input_name = InputTensor(decl, call, 0, q_params[0], cfg->dtype_weight);
+  string input_name = InputTensor(op, decl, call, 0, q_params[0], cfg->dtype_weight);
 
   string block_shape_name = "block_shape_" + to_string(buf_idx_);
   string paddings_name = "paddings_" + to_string(buf_idx_);
@@ -4457,7 +4596,7 @@ void CodegenCSINN::SpaceToBatchND(const CallNode* call) {
     t0 << to_string(attrs->block_shape[i].as<IntImmNode>()->value) << ", ";
   }
   t0 << "}";
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
   // Emit paddings
   t0 << "int32_t " << paddings_name << "[" << spatial_dim_cnt * 2 << "] = {";
@@ -4466,19 +4605,24 @@ void CodegenCSINN::SpaceToBatchND(const CallNode* call) {
     t0 << to_string(attrs->paddings[i][1].as<IntImmNode>()->value) << ", ";
   }
   t0 << "}";
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
-  string output_name = OutputTensor(decl, call, q_params[1], cfg->dtype_weight);
+  string output_name = OutputTensor(op, decl, call, q_params[1], cfg->dtype_weight);
+
+  string complete_name = get_complete_layer_name("space_to_batch_nd", attrs->layer_name.c_str());
+  collect_quant_info(complete_name, attrs->q_params, 1);
+
   string params_name = "params_" + to_string(buf_idx_);
   decl << ", " << params_name << ")";
-  malloc_params("space_to_batch_nd_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_space_to_batch_nd_params", params_name);
 
   t0 << params_name << "->paddings = " << paddings_name;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->block_shape = " << block_shape_name;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->spatial_dim_cnt = " << to_string(spatial_dim_cnt);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
   PushOutput(output_name, call);
   params_common_setup(decl, call, "space_to_batch_nd", params_name, attrs->layer_name.c_str());
@@ -4489,6 +4633,7 @@ void CodegenCSINN::SpaceToBatchND(const CallNode* call) {
 void CodegenCSINN::MatMul(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attrs = call->attrs.as<QnnCSIMatMulAttrs>();
   CHECK(attrs);
   std::map<int, string> free_tensor;
@@ -4503,7 +4648,7 @@ void CodegenCSINN::MatMul(const CallNode* call) {
   CHECK(out_.size() == 1) << "Every args expects a single out_";
   string complete_name = get_complete_layer_name("matmul", attrs->layer_name.c_str());
   bool is_layer_hybrid = is_contain_item<string>(hybrid_layer_name, complete_name);
-  string input1_name = HybridInputTensor(decl, call, 0, attrs->q_params, 0, is_layer_hybrid);
+  string input1_name = HybridInputTensor(op, decl, call, 0, attrs->q_params, 0, is_layer_hybrid);
   free_tensor[0] = input1_name;
   buf_idx_++;
   decl << ", ";
@@ -4514,7 +4659,7 @@ void CodegenCSINN::MatMul(const CallNode* call) {
   if (call->args[1].as<tvm::relay::CallNode>() || call->args[1].as<tvm::relay::VarNode>() ||
       call->args[0].as<tvm::relay::TupleGetItemNode>()) {
     CHECK(out_.size() == 1) << "Every args expects a single out_";
-    input2_name = HybridInputTensor(decl, call, 1, attrs->q_params, 1, is_layer_hybrid);
+    input2_name = HybridInputTensor(op, decl, call, 1, attrs->q_params, 1, is_layer_hybrid);
     free_tensor[1] = input2_name;
   } else {
     // add constant arg
@@ -4522,7 +4667,8 @@ void CodegenCSINN::MatMul(const CallNode* call) {
     auto data_b = constant_[0];
     auto b_shape = GetShape(call->args[1]->checked_type());
     input2_name = "data_b_" + to_string(buf_idx_);
-    CreateHybridConstantTensor(&data_b, input2_name, b_shape, attrs->q_params, 1, is_layer_hybrid);
+    CreateHybridConstantTensor(op, &data_b, input2_name, b_shape, attrs->q_params, 1,
+                               is_layer_hybrid);
     decl << input2_name;
   }
 
@@ -4532,24 +4678,28 @@ void CodegenCSINN::MatMul(const CallNode* call) {
   // auto bias = constant_[0];
   // auto bshape = GetShape(call->args[2]->checked_type());
   // string bias_name = "bias_" + to_string(buf_idx_);
-  // CreateConstantTensor(&bias, bias_name, bshape, cfg->dtype_activation, q_params[0], q_params[1],
+  // CreateConstantTensor(op, &bias, bias_name, bshape, cfg->dtype_activation, q_params[0],
+  // q_params[1],
   //                      q_params[2]);
   // decl << ", " << bias_name;
 
   /* Emit output tensor */
-  string output_name = HybridOutputTensor(decl, call, attrs->q_params, 2, is_layer_hybrid);
+  string output_name = HybridOutputTensor(op, decl, call, attrs->q_params, 2, is_layer_hybrid);
   output2params[output_name] = complete_name;
+
+  collect_quant_info(complete_name, attrs->q_params, 2);
 
   string params_name = "params_" + to_string(buf_idx_);
 
   decl << ", " << params_name << ")";
-  malloc_params("matmul_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_matmul_params", params_name);
   string transpose_a = attrs->transpose_a ? "true" : "false";
   string transpose_b = attrs->transpose_b ? "true" : "false";
   t0 << params_name << "->trans_a = " << transpose_a;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->trans_b = " << transpose_b;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   if (is_layer_hybrid) {
     PushOutput(output_name, call, hybrid_cfg->dtype_weight);
   } else {
@@ -4566,6 +4716,7 @@ void CodegenCSINN::MatMul(const CallNode* call) {
 void CodegenCSINN::CacheMatMul(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attrs = call->attrs.as<QnnCSICacheMatMulAttrs>();
   CHECK(attrs);
   QuantParams* q_params = GetQuantParams(attrs->q_params);
@@ -4578,10 +4729,13 @@ void CodegenCSINN::CacheMatMul(const CallNode* call) {
   /* Emit input tensor */
   VisitExpr(call->args[0]);
   CHECK(out_.size() == 1) << "Every args expects a single out_";
-  string input_name = InputTensor(decl, call, 0, q_params[0], cfg->dtype_weight);
+  string input_name = InputTensor(op, decl, call, 0, q_params[0], cfg->dtype_weight);
 
   /* Emit output tensor */
-  string output_name = OutputTensor(decl, call, q_params[3], cfg->dtype_weight);
+  string output_name = OutputTensor(op, decl, call, q_params[3], cfg->dtype_weight);
+
+  string complete_name = get_complete_layer_name("cache_matmul", attrs->layer_name.c_str());
+  collect_quant_info(complete_name, attrs->q_params, 3);
 
   /* Emit weight tensor */
   VisitExpr(call->args[1]);
@@ -4590,7 +4744,7 @@ void CodegenCSINN::CacheMatMul(const CallNode* call) {
   auto weight_shape = GetShape(call->args[1]->checked_type());
 
   string weight_name = "weight_" + to_string(buf_idx_);
-  CreateConstantTensor(&weight, weight_name, weight_shape, cfg->dtype_weight, q_params[1]);
+  CreateConstantTensor(op, &weight, weight_name, weight_shape, cfg->dtype_weight, q_params[1]);
 
   decl << ", " << weight_name;
 
@@ -4600,48 +4754,49 @@ void CodegenCSINN::CacheMatMul(const CallNode* call) {
   auto bias = constant_[0];
   auto bshape = GetShape(call->args[2]->checked_type());
   string bias_name = "bias_" + to_string(buf_idx_);
-  CreateConstantTensor(&bias, bias_name, bshape, cfg->dtype_activation, q_params[0], q_params[1],
-                       q_params[2]);
+  CreateConstantTensor(op, &bias, bias_name, bshape, cfg->dtype_activation, q_params[0],
+                       q_params[1], q_params[2]);
 
   decl << ", " << bias_name;
 
   string params_name = "params_" + to_string(buf_idx_);
 
   decl << ", " << params_name << ")";
-  malloc_params("cache_matmul_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_cache_matmul_params", params_name);
 
   string cache_shape_name = "cache_shape_" + to_string(buf_idx_);
   t0 << "int32_t *" << cache_shape_name << " = malloc(" << attrs->cache_shape.size() << " * 4)";
 
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   for (uint i = 0; i < attrs->cache_shape.size(); i++) {
     t0 << cache_shape_name << "[" << i << "] = " << to_string(attrs->cache_shape[i]);
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
   }
 
   string shape_name = "shape_" + to_string(buf_idx_);
   t0 << "int32_t *" << shape_name << " = malloc(" << attrs->shape.size() << " * 4)";
 
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   for (uint i = 0; i < attrs->shape.size(); i++) {
     t0 << shape_name << "[" << i << "] = " << to_string(attrs->shape[i]);
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
   }
 
   string axes_name = "axes_" + to_string(buf_idx_);
   t0 << "int32_t *" << axes_name << " = malloc(" << attrs->axes.size() << " * 4)";
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   for (uint i = 0; i < attrs->axes.size(); i++) {
     t0 << axes_name << "[" << i << "] = " << to_string(attrs->axes[i]);
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
   }
 
   t0 << params_name << "->cache_shape = " << cache_shape_name;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->shape = " << shape_name;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->axes = " << axes_name;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   PushOutput(output_name, call);
 
   params_common_setup(decl, call, "cache_matmul", params_name, attrs->layer_name.c_str());
@@ -4652,6 +4807,7 @@ void CodegenCSINN::CacheMatMul(const CallNode* call) {
 void CodegenCSINN::CacheConv1d(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attr = call->attrs.as<QnnCSICacheConv1DAttrs>();
   CHECK(attr);
   QuantParams* q_params = GetQuantParams(attr->q_params);
@@ -4664,10 +4820,13 @@ void CodegenCSINN::CacheConv1d(const CallNode* call) {
   /* Emit_ input tensor */
   VisitExpr(call->args[0]);
   CHECK(out_.size() == 1) << "Every args expects a single out_";
-  string input_name = InputTensor(decl, call, 0, q_params[0], cfg->dtype_weight);
+  string input_name = InputTensor(op, decl, call, 0, q_params[0], cfg->dtype_weight);
 
   /* Emit output tensor */
-  string output_name = OutputTensor(decl, call, q_params[3], cfg->dtype_weight);
+  string output_name = OutputTensor(op, decl, call, q_params[3], cfg->dtype_weight);
+
+  string complete_name = get_complete_layer_name("cache_conv1d", attr->layer_name.c_str());
+  collect_quant_info(complete_name, attr->q_params, 3);
 
   /* Emit kernel tensor */
   VisitExpr(call->args[1]);
@@ -4675,7 +4834,7 @@ void CodegenCSINN::CacheConv1d(const CallNode* call) {
   auto kernel = constant_[0];
   auto wshape = GetShape(call->args[1]->checked_type());
   string kernel_name = "kernel_" + to_string(buf_idx_);
-  CreateConstantTensor(&kernel, kernel_name, wshape, cfg->dtype_weight, q_params[1]);
+  CreateConstantTensor(op, &kernel, kernel_name, wshape, cfg->dtype_weight, q_params[1]);
   decl << ", " << kernel_name;
 
   /* Emit bias tensor */
@@ -4684,36 +4843,36 @@ void CodegenCSINN::CacheConv1d(const CallNode* call) {
   auto bias = constant_[0];
   auto bshape = GetShape(call->args[2]->checked_type());
   string bias_name = "bias_" + to_string(buf_idx_);
-  CreateConstantTensor(&bias, bias_name, bshape, cfg->dtype_activation, q_params[0], q_params[1],
-                       q_params[2]);
+  CreateConstantTensor(op, &bias, bias_name, bshape, cfg->dtype_activation, q_params[0],
+                       q_params[1], q_params[2]);
 
   decl << ", " << bias_name;
 
   string params_name = "params_" + to_string(buf_idx_);
 
   decl << ", " << params_name << ")";
-
-  malloc_params("cache_conv1d_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_cache_conv1d_params", params_name);
   string shape_name = "cache_shape_" + to_string(buf_idx_);
   t0 << "int32_t *" << shape_name << " = malloc(" << attr->cache_shape.size() << " * 4)";
 
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   for (uint i = 0; i < attr->cache_shape.size(); i++) {
     t0 << shape_name << "[" << i << "] = " << to_string(attr->cache_shape[i]);
-    PushDeclLine(t0);
+    func_def_.PushDecl(t0);
   }
 
   t0 << params_name << "->cache_shape = " << shape_name;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
 
   t0 << params_name << "->group = " << to_string(attr->groups);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   Array<IndexExpr> strides = attr->strides;
   t0 << params_name << "->stride_width = " << to_string(strides[0].as<IntImmNode>()->value);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   Array<IndexExpr> dilation = attr->dilation;
   t0 << params_name << "->dilation_width = " << to_string(dilation[0].as<IntImmNode>()->value);
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   Setup1dPadding<QnnCSICacheConv1DAttrs>(params_name, attr);
 
   PushOutput(output_name, call);
@@ -4725,6 +4884,7 @@ void CodegenCSINN::CacheConv1d(const CallNode* call) {
 void CodegenCSINN::LayerNorm(const CallNode* call) {
   std::ostringstream decl;
   std::ostringstream t0;
+  CSINNOP* op = new CSINNOP;
   const auto* attrs = call->attrs.as<QnnCSILayerNormAttrs>();
   CHECK(attrs);
   QuantParams* q_params = GetQuantParams(attrs->q_params);
@@ -4737,10 +4897,13 @@ void CodegenCSINN::LayerNorm(const CallNode* call) {
   /* Emit input tensor */
   VisitExpr(call->args[0]);
   CHECK(out_.size() == 1) << "Every args expects a single out_";
-  string input_name = InputTensor(decl, call, 0, q_params[0], cfg->dtype_weight);
+  string input_name = InputTensor(op, decl, call, 0, q_params[0], cfg->dtype_weight);
 
   /* Emit output tensor */
-  string output_name = OutputTensor(decl, call, q_params[3], cfg->dtype_weight);
+  string output_name = OutputTensor(op, decl, call, q_params[3], cfg->dtype_weight);
+
+  string complete_name = get_complete_layer_name("layer_norm", attrs->layer_name.c_str());
+  collect_quant_info(complete_name, attrs->q_params, 3);
 
   /* Emit gamma tensor */
   VisitExpr(call->args[1]);
@@ -4749,7 +4912,7 @@ void CodegenCSINN::LayerNorm(const CallNode* call) {
   auto gamma_shape = GetShape(call->args[1]->checked_type());
 
   string gamma_name = "gamma_" + to_string(buf_idx_);
-  CreateConstantTensor(&gamma, gamma_name, gamma_shape, cfg->dtype_weight, q_params[1]);
+  CreateConstantTensor(op, &gamma, gamma_name, gamma_shape, cfg->dtype_weight, q_params[1]);
 
   decl << ", " << gamma_name;
 
@@ -4759,25 +4922,26 @@ void CodegenCSINN::LayerNorm(const CallNode* call) {
   auto beta = constant_[0];
   auto bshape = GetShape(call->args[2]->checked_type());
   string beta_name = "beta_" + to_string(buf_idx_);
-  CreateConstantTensor(&beta, beta_name, bshape, cfg->dtype_weight, q_params[2]);
+  CreateConstantTensor(op, &beta, beta_name, bshape, cfg->dtype_weight, q_params[2]);
 
   decl << ", " << beta_name;
 
   string params_name = "params_" + to_string(buf_idx_);
 
   decl << ", " << params_name << ")";
-  malloc_params("layer_norm_params", params_name);
+  push_decl(op);
+  malloc_params("csinn_layer_norm_params", params_name);
 
   t0 << params_name << "->epsilon = " << attrs->epsilon;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   t0 << params_name << "->axis = " << attrs->axis;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   string center = attrs->center ? "true" : "false";
   t0 << params_name << "->center = " << center;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   string scale = attrs->scale ? "true" : "false";
   t0 << params_name << "->scale = " << scale;
-  PushDeclLine(t0);
+  func_def_.PushDecl(t0);
   PushOutput(output_name, call);
 
   params_common_setup(decl, call, "layer_norm", params_name, attrs->layer_name.c_str());

@@ -81,6 +81,9 @@ def collect_preprocess_config(filtered_args, extra=None):
     filtered_args.preprocess_config.light_input_fix_size = parse_mean(
         filtered_args.preprocess_config.light_input_fix_size
     )
+    filtered_args.preprocess_config.data_scale = filtered_args["data_scale"] * (
+        1 / filtered_args["data_scale_div"]
+    )
 
 
 @argument_filter_helper
@@ -223,10 +226,10 @@ class DatasetLoader(object):
                     continue
                 self._dp.img_resize(resize_shape=self.pre_params.data_resize)
                 self._dp.img_crop(crop_shape=self.pre_params.target_shape)
+                self._dp.channel_swap(self.pre_params.channel_swap)
                 if not self.pre_params.add_preprocess_node:
                     self._dp.sub_mean(mean_val=self.pre_params.data_mean)
                     self._dp.data_scale(self.pre_params.data_scale)
-                self._dp.channel_swap(self.pre_params.channel_swap)
                 self._dp.data_expand_dim()
                 self._dp.data_transpose((0, 3, 1, 2))
                 dataset = self._dp.get_data()

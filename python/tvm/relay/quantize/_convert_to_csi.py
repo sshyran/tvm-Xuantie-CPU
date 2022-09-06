@@ -171,10 +171,11 @@ def get_out_params(outs):
     return [ACTIVATION, USE_MINMAX] + min_max_value
 
 
-def get_layer_name(span, layer_index):
-    layer_name = layer_index
-    if span:
-        layer_name = span.source_name.name
+def get_layer_name(call, layer_index):
+    layer_name = call.op.name.split(".")[-1]
+    if call.span:
+        layer_name = layer_name + "_" + call.span.source_name.name
+    layer_name = layer_name + "_" + layer_index
     return layer_name
 
 
@@ -381,9 +382,10 @@ def calibration(module, dataset):
                     self.outs_map[call].append(const(value))
                     quant_data.append(value.asnumpy())
                 else:
-                    mo_flag = True
                     self.outs_map[call].append(value)
-                    quant_data = [[] for _ in value]
+                    if not mo_flag:
+                        quant_data = [[] for _ in value]
+                    mo_flag = True
                     for j, x in enumerate(value):
                         data = x.asnumpy()
                         quant_data[j].append(data)
@@ -600,13 +602,20 @@ def convert_to_csi_qnn(mod, quant_params):
                         + "but not absolutely."
                     )
 
+            self._idx = 0
+
         def get_lay_index(self, hash_call):
-            if not quant_params:
-                return "None"
-            for i, j in self.layer_index:
-                if j == hash_call:
-                    return str(i)
-            raise Exception("Can't find layer index.")
+            """Get layer index."""
+            res = ""
+            if quant_params:
+                for i, j in self.layer_index:
+                    if j == hash_call:
+                        res += str(i)
+                        break
+            if res == "":
+                res = str(self._idx)
+                self._idx += 1
+            return res
 
         def q_params_optimizer(self, q_params, current_args, op_name):
             """Quantitative parameters optimizer for channel quantization.
@@ -677,7 +686,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.out_layout,
                     cts.out_dtype,
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "nn.conv1d":
                 data = op_args[0]
@@ -699,7 +708,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.out_layout,
                     cts.out_dtype,
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "nn.conv3d":
                 data = op_args[0]
@@ -721,7 +730,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.out_layout,
                     cts.out_dtype,
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "image.dilation2d":
                 data = op_args[0]
@@ -736,7 +745,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.kernel_layout,
                     cts.out_dtype,
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "nn.dense":
                 data = op_args[0]
@@ -755,7 +764,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.units,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "nn.bias_add":
                 lhs = op_args[0]
@@ -782,76 +791,76 @@ def convert_to_csi_qnn(mod, quant_params):
                     new_rhs_data = np.reshape(rhs_data, shape_map[cts.axis])
                     new_rhs = relay.expr.const(new_rhs_data, dtype="float32")
                     new_call = relay.qnn.op.csi_add(
-                        lhs, new_rhs, q_params, layer_name=get_layer_name(call.span, layer_index)
+                        lhs, new_rhs, q_params, layer_name=get_layer_name(call, layer_index)
                     )
                 else:
                     new_call = relay.qnn.op.csi_bias_add(
-                        lhs, rhs, q_params, layer_name=get_layer_name(call.span, layer_index)
+                        lhs, rhs, q_params, layer_name=get_layer_name(call, layer_index)
                     )
             elif call.op.name == "nn.relu":
                 pre_call = op_args[0]
                 new_call = relay.qnn.op.csi_relu(
-                    pre_call, "float32", q_params, layer_name=get_layer_name(call.span, layer_index)
+                    pre_call, "float32", q_params, layer_name=get_layer_name(call, layer_index)
                 )
             elif call.op.name == "sin":
                 data = op_args[0]
                 new_call = relay.qnn.op.csi_sin(
-                    data, "float32", q_params, layer_name=get_layer_name(call.span, layer_index)
+                    data, "float32", q_params, layer_name=get_layer_name(call, layer_index)
                 )
             elif call.op.name == "cos":
                 data = op_args[0]
                 new_call = relay.qnn.op.csi_cos(
-                    data, "float32", q_params, layer_name=get_layer_name(call.span, layer_index)
+                    data, "float32", q_params, layer_name=get_layer_name(call, layer_index)
                 )
             elif call.op.name == "tan":
                 data = op_args[0]
                 new_call = relay.qnn.op.csi_tan(
-                    data, "float32", q_params, layer_name=get_layer_name(call.span, layer_index)
+                    data, "float32", q_params, layer_name=get_layer_name(call, layer_index)
                 )
             elif call.op.name == "asin":
                 data = op_args[0]
                 new_call = relay.qnn.op.csi_asin(
-                    data, "float32", q_params, layer_name=get_layer_name(call.span, layer_index)
+                    data, "float32", q_params, layer_name=get_layer_name(call, layer_index)
                 )
             elif call.op.name == "acos":
                 data = op_args[0]
                 new_call = relay.qnn.op.csi_acos(
-                    data, "float32", q_params, layer_name=get_layer_name(call.span, layer_index)
+                    data, "float32", q_params, layer_name=get_layer_name(call, layer_index)
                 )
             elif call.op.name == "atan":
                 data = op_args[0]
                 new_call = relay.qnn.op.csi_atan(
-                    data, "float32", q_params, layer_name=get_layer_name(call.span, layer_index)
+                    data, "float32", q_params, layer_name=get_layer_name(call, layer_index)
                 )
             elif call.op.name == "sinh":
                 data = op_args[0]
                 new_call = relay.qnn.op.csi_sinh(
-                    data, "float32", q_params, layer_name=get_layer_name(call.span, layer_index)
+                    data, "float32", q_params, layer_name=get_layer_name(call, layer_index)
                 )
             elif call.op.name == "cosh":
                 data = op_args[0]
                 new_call = relay.qnn.op.csi_cosh(
-                    data, "float32", q_params, layer_name=get_layer_name(call.span, layer_index)
+                    data, "float32", q_params, layer_name=get_layer_name(call, layer_index)
                 )
             elif call.op.name == "tanh":
                 data = op_args[0]
                 new_call = relay.qnn.op.csi_tanh(
-                    data, "float32", q_params, layer_name=get_layer_name(call.span, layer_index)
+                    data, "float32", q_params, layer_name=get_layer_name(call, layer_index)
                 )
             elif call.op.name == "asinh":
                 data = op_args[0]
                 new_call = relay.qnn.op.csi_asinh(
-                    data, "float32", q_params, layer_name=get_layer_name(call.span, layer_index)
+                    data, "float32", q_params, layer_name=get_layer_name(call, layer_index)
                 )
             elif call.op.name == "acosh":
                 data = op_args[0]
                 new_call = relay.qnn.op.csi_acosh(
-                    data, "float32", q_params, layer_name=get_layer_name(call.span, layer_index)
+                    data, "float32", q_params, layer_name=get_layer_name(call, layer_index)
                 )
             elif call.op.name == "atanh":
                 data = op_args[0]
                 new_call = relay.qnn.op.csi_atanh(
-                    data, "float32", q_params, layer_name=get_layer_name(call.span, layer_index)
+                    data, "float32", q_params, layer_name=get_layer_name(call, layer_index)
                 )
             elif call.op.name == "segment_max":
                 data = op_args[0]
@@ -862,7 +871,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.num_segments,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "segment_min":
                 data = op_args[0]
@@ -873,7 +882,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.length,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "segment_mean":
                 data = op_args[0]
@@ -884,7 +893,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.length,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "segment_prod":
                 data = op_args[0]
@@ -895,7 +904,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.length,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "segment_sum":
                 data = op_args[0]
@@ -906,7 +915,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.length,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "nn.batch_norm":
                 data = op_args[0]
@@ -925,7 +934,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.center,
                     cts.scale,
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "nn.batch_matmul":
                 data_a = op_args[0]
@@ -940,7 +949,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.transpose_b,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "nn.avg_pool2d":
                 data = op_args[0]
@@ -954,7 +963,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.count_include_pad,
                     cts.layout,
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "nn.avg_pool3d":
                 data = op_args[0]
@@ -968,7 +977,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.count_include_pad,
                     cts.layout,
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "nn.max_pool3d":
                 data = op_args[0]
@@ -981,7 +990,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.ceil_mode,
                     cts.layout,
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "nn.global_avg_pool2d":
                 data = op_args[0]
@@ -990,7 +999,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.layout,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "nn.global_max_pool2d":
                 data = op_args[0]
@@ -999,7 +1008,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.layout,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "nn.max_pool2d":
                 data = op_args[0]
@@ -1012,7 +1021,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.ceil_mode,
                     cts.layout,
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "reshape":
                 data = op_args[0]
@@ -1021,7 +1030,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.newshape,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "squeeze":
                 data = op_args[0]
@@ -1041,7 +1050,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     new_shape,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "nn.softmax":
                 data = op_args[0]
@@ -1050,7 +1059,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.axis,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "scatter_nd":
                 data = op_args[0]
@@ -1062,7 +1071,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     updates,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "reverse":
                 data = op_args[0]
@@ -1072,12 +1081,12 @@ def convert_to_csi_qnn(mod, quant_params):
                     axis,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "negative":
                 data = op_args[0]
                 new_call = relay.qnn.op.csi_negative(
-                    data, "float32", q_params, layer_name=get_layer_name(call.span, layer_index)
+                    data, "float32", q_params, layer_name=get_layer_name(call, layer_index)
                 )
             elif call.op.name == "nn.log_softmax":
                 data = op_args[0]
@@ -1086,7 +1095,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.axis,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "nn.lrn":
                 data = op_args[0]
@@ -1100,7 +1109,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.norm_region,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "concatenate":
                 data = op_args[0]
@@ -1109,7 +1118,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     in_shape = _infer_shape(call)
                     axis += len(in_shape)
                 new_call = relay.qnn.op.csi_concatenate(
-                    data, axis, q_params, layer_name=get_layer_name(call.span, layer_index)
+                    data, axis, q_params, layer_name=get_layer_name(call, layer_index)
                 )
             elif call.op.name == "add":
                 lhs = op_args[0]
@@ -1117,12 +1126,23 @@ def convert_to_csi_qnn(mod, quant_params):
                 if isinstance(lhs, Constant):
                     lhs, rhs = rhs, lhs
                     q_params[0], q_params[1] = q_params[1], q_params[0]
+                if isinstance(rhs, Constant):
+                    rhs_value = rhs.data.asnumpy()
+                    rhs_shape = list(rhs_value.shape)
+                    lhs_shape = _infer_shape(lhs)
+
+                    if len(rhs_shape) < len(lhs_shape):
+                        left_axis = len(lhs_shape) - len(rhs_shape)
+                        for i in range(left_axis):
+                            rhs_shape.insert(0, 1)
+                        rhs_value = np.reshape(rhs_value, rhs_shape)
+                        rhs = relay.expr.const(rhs_value, "float32")
                 new_call = relay.qnn.op.csi_add(
-                    lhs, rhs, q_params, layer_name=get_layer_name(call.span, layer_index)
+                    lhs, rhs, q_params, layer_name=get_layer_name(call, layer_index)
                 )
             elif call.op.name == "equal":
                 new_call = relay.qnn.op.csi_equal(
-                    *op_args, q_params, layer_name=get_layer_name(call.span, layer_index)
+                    *op_args, q_params, layer_name=get_layer_name(call, layer_index)
                 )
             elif call.op.name == "subtract":
                 lhs = op_args[0]
@@ -1131,7 +1151,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     lhs, rhs = rhs, lhs
                     q_params[0], q_params[1] = q_params[1], q_params[0]
                 new_call = relay.qnn.op.csi_subtract(
-                    lhs, rhs, q_params, layer_name=get_layer_name(call.span, layer_index)
+                    lhs, rhs, q_params, layer_name=get_layer_name(call, layer_index)
                 )
                 if isinstance(rhs, Constant):
                     rhs_value = rhs.data.asnumpy()
@@ -1148,7 +1168,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.alpha,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "nn.upsampling":
                 data = op_args[0]
@@ -1161,7 +1181,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     "float32",
                     cts.layout,
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "image.resize2d":
                 data = op_args[0]
@@ -1182,7 +1202,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     "float32",
                     cts.layout,
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
 
             elif call.op.name == "nn.conv2d_transpose":
@@ -1206,7 +1226,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.output_padding,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "nn.conv3d_transpose":
                 data = op_args[0]
@@ -1229,7 +1249,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.output_padding,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "transpose":
                 data = op_args[0]
@@ -1238,7 +1258,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.axes,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "nn.batch_flatten":
                 data = op_args[0]
@@ -1249,12 +1269,12 @@ def convert_to_csi_qnn(mod, quant_params):
                     new_shape,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "sigmoid":
                 data = op_args[0]
                 new_call = relay.qnn.op.csi_sigmoid(
-                    data, "float32", q_params, layer_name=get_layer_name(call.span, layer_index)
+                    data, "float32", q_params, layer_name=get_layer_name(call, layer_index)
                 )
             elif call.op.name == "vision.proposal":
                 cls_prob = op_args[0]
@@ -1274,7 +1294,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.iou_loss,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "vision.psroipooling":
                 cls_prob = op_args[0]
@@ -1287,7 +1307,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.group_size,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "vision.roi_pool":
                 data = op_args[0]
@@ -1299,7 +1319,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.spatial_scale,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "multiply":
                 lhs = op_args[0]
@@ -1307,8 +1327,19 @@ def convert_to_csi_qnn(mod, quant_params):
                 if isinstance(lhs, Constant):
                     lhs, rhs = rhs, lhs
                     q_params[0], q_params[1] = q_params[1], q_params[0]
+                if isinstance(rhs, Constant):
+                    rhs_value = rhs.data.asnumpy()
+                    rhs_shape = list(rhs_value.shape)
+                    lhs_shape = _infer_shape(lhs)
+
+                    if len(rhs_shape) < len(lhs_shape):
+                        left_axis = len(lhs_shape) - len(rhs_shape)
+                        for i in range(left_axis):
+                            rhs_shape.insert(0, 1)
+                        rhs_value = np.reshape(rhs_value, rhs_shape)
+                        rhs = relay.expr.const(rhs_value, "float32")
                 new_call = relay.qnn.op.csi_mul(
-                    lhs, rhs, q_params, layer_name=get_layer_name(call.span, layer_index)
+                    lhs, rhs, q_params, layer_name=get_layer_name(call, layer_index)
                 )
                 if isinstance(rhs, Constant):
                     rhs_value = rhs.data.asnumpy()
@@ -1322,19 +1353,19 @@ def convert_to_csi_qnn(mod, quant_params):
                 lhs = op_args[0]
                 rhs = op_args[1]
                 new_call = relay.qnn.op.csi_div(
-                    lhs, rhs, q_params, layer_name=get_layer_name(call.span, layer_index)
+                    lhs, rhs, q_params, layer_name=get_layer_name(call, layer_index)
                 )
             elif call.op.name == "power":
                 lhs = op_args[0]
                 rhs = op_args[1]
                 new_call = relay.qnn.op.csi_power(
-                    lhs, rhs, q_params, layer_name=get_layer_name(call.span, layer_index)
+                    lhs, rhs, q_params, layer_name=get_layer_name(call, layer_index)
                 )
             elif call.op.name == "mod":
                 lhs = op_args[0]
                 rhs = op_args[1]
                 new_call = relay.qnn.op.csi_mod(
-                    lhs, rhs, q_params, layer_name=get_layer_name(call.span, layer_index)
+                    lhs, rhs, q_params, layer_name=get_layer_name(call, layer_index)
                 )
             elif call.op.name == "nn.prelu":
                 data = op_args[0]
@@ -1345,7 +1376,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.axis,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "nn.max_pool2d_with_argmax":
                 data = op_args[0]
@@ -1358,7 +1389,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.ceil_mode,
                     cts.layout,
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "mean":
                 data = op_args[0]
@@ -1369,7 +1400,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.exclude,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "prod":
                 data = op_args[0]
@@ -1380,7 +1411,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.exclude,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "max":
                 data = op_args[0]
@@ -1391,7 +1422,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.exclude,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "min":
                 data = op_args[0]
@@ -1402,7 +1433,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.exclude,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "sum":
                 data = op_args[0]
@@ -1413,7 +1444,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.exclude,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "argmax":
                 data = op_args[0]
@@ -1424,7 +1455,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.exclude,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "argmin":
                 data = op_args[0]
@@ -1435,7 +1466,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.exclude,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "nn.pad":
                 data = op_args[0]
@@ -1447,7 +1478,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.pad_mode,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "clip":
                 pre_call = op_args[0]
@@ -1457,21 +1488,21 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.a_max,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
                 if [cts.a_min, cts.a_max] == [0, 6]:
                     new_call = relay.qnn.op.csi_relu6(
                         pre_call,
                         "float32",
                         q_params,
-                        layer_name=get_layer_name(call.span, layer_index),
+                        layer_name=get_layer_name(call, layer_index),
                     )
                 elif cts.a_min == 0:
                     new_call = relay.qnn.op.csi_relu(
                         pre_call,
                         "float32",
                         q_params,
-                        layer_name=get_layer_name(call.span, layer_index),
+                        layer_name=get_layer_name(call, layer_index),
                     )
             elif call.op.name == "vision.max_pool2d_location":
                 data = op_args[0]
@@ -1484,7 +1515,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     "float32",
                     cts.layout,
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "vision.unpooling":
                 data = op_args[0]
@@ -1499,7 +1530,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     "float32",
                     cts.layout,
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "strided_slice":
                 data = op_args[0]
@@ -1519,7 +1550,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     strides,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "split":
                 data = op_args[0]
@@ -1535,7 +1566,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.axis,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "variance":
                 data = op_args[0]
@@ -1546,22 +1577,22 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.exclude,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "exp":
                 data = op_args[0]
                 new_call = relay.qnn.op.csi_exp(
-                    data, "float32", q_params, layer_name=get_layer_name(call.span, layer_index)
+                    data, "float32", q_params, layer_name=get_layer_name(call, layer_index)
                 )
             elif call.op.name == "log":
                 data = op_args[0]
                 new_call = relay.qnn.op.csi_log(
-                    data, "float32", q_params, layer_name=get_layer_name(call.span, layer_index)
+                    data, "float32", q_params, layer_name=get_layer_name(call, layer_index)
                 )
             elif call.op.name == "abs":
                 data = op_args[0]
                 new_call = relay.qnn.op.csi_abs(
-                    data, "float32", q_params, layer_name=get_layer_name(call.span, layer_index)
+                    data, "float32", q_params, layer_name=get_layer_name(call, layer_index)
                 )
             elif call.op.name == "expand_dims":
                 data = op_args[0]
@@ -1580,7 +1611,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     new_shape,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "broadcast_to":
                 data = op_args[0]
@@ -1598,7 +1629,7 @@ def convert_to_csi_qnn(mod, quant_params):
                                 cts.shape,
                                 "float32",
                                 q_params,
-                                layer_name=get_layer_name(call.span, layer_index),
+                                layer_name=get_layer_name(call, layer_index),
                             )
                         else:
                             new_call = relay.qnn.op.csi_reshape(
@@ -1606,7 +1637,7 @@ def convert_to_csi_qnn(mod, quant_params):
                                 cts.shape,
                                 "float32",
                                 q_params,
-                                layer_name=get_layer_name(call.span, layer_index),
+                                layer_name=get_layer_name(call, layer_index),
                             )
                     else:
                         new_call = relay.qnn.op.csi_broadcast_to(
@@ -1614,60 +1645,60 @@ def convert_to_csi_qnn(mod, quant_params):
                             cts.shape,
                             "float32",
                             q_params,
-                            layer_name=get_layer_name(call.span, layer_index),
+                            layer_name=get_layer_name(call, layer_index),
                         )
             elif call.op.name == "cast":
                 new_call = op_args[0]
             elif call.op.name == "ceil":
                 data = op_args[0]
                 new_call = relay.qnn.op.csi_ceil(
-                    data, "float32", q_params, layer_name=get_layer_name(call.span, layer_index)
+                    data, "float32", q_params, layer_name=get_layer_name(call, layer_index)
                 )
             elif call.op.name == "floor":
                 data = op_args[0]
                 new_call = relay.qnn.op.csi_floor(
-                    data, "float32", q_params, layer_name=get_layer_name(call.span, layer_index)
+                    data, "float32", q_params, layer_name=get_layer_name(call, layer_index)
                 )
             elif call.op.name == "round":
                 data = op_args[0]
                 new_call = relay.qnn.op.csi_round(
-                    data, "float32", q_params, layer_name=get_layer_name(call.span, layer_index)
+                    data, "float32", q_params, layer_name=get_layer_name(call, layer_index)
                 )
             elif call.op.name == "minimum":
                 lhs = op_args[0]
                 rhs = op_args[1]
                 new_call = relay.qnn.op.csi_minimum(
-                    lhs, rhs, q_params, layer_name=get_layer_name(call.span, layer_index)
+                    lhs, rhs, q_params, layer_name=get_layer_name(call, layer_index)
                 )
             elif call.op.name == "maximum":
                 lhs = op_args[0]
                 rhs = op_args[1]
                 new_call = relay.qnn.op.csi_maximum(
-                    lhs, rhs, q_params, layer_name=get_layer_name(call.span, layer_index)
+                    lhs, rhs, q_params, layer_name=get_layer_name(call, layer_index)
                 )
             elif call.op.name == "right_shift":
                 lhs = op_args[0]
                 rhs = op_args[1]
                 new_call = relay.qnn.op.csi_right_shift(
-                    lhs, rhs, q_params, layer_name=get_layer_name(call.span, layer_index)
+                    lhs, rhs, q_params, layer_name=get_layer_name(call, layer_index)
                 )
             elif call.op.name == "left_shift":
                 lhs = op_args[0]
                 rhs = op_args[1]
                 new_call = relay.qnn.op.csi_left_shift(
-                    lhs, rhs, q_params, layer_name=get_layer_name(call.span, layer_index)
+                    lhs, rhs, q_params, layer_name=get_layer_name(call, layer_index)
                 )
             elif call.op.name == "floor_divide":
                 lhs = op_args[0]
                 rhs = op_args[1]
                 new_call = relay.qnn.op.csi_floor_div(
-                    lhs, rhs, q_params, layer_name=get_layer_name(call.span, layer_index)
+                    lhs, rhs, q_params, layer_name=get_layer_name(call, layer_index)
                 )
             elif call.op.name == "floor_mod":
                 lhs = op_args[0]
                 rhs = op_args[1]
                 new_call = relay.qnn.op.csi_floor_mod(
-                    lhs, rhs, q_params, layer_name=get_layer_name(call.span, layer_index)
+                    lhs, rhs, q_params, layer_name=get_layer_name(call, layer_index)
                 )
             elif call.op.name == "image.crop_and_resize":
                 data = op_args[0]
@@ -1683,7 +1714,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.extrapolation_value,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "nn.depth_to_space":
                 data = op_args[0]
@@ -1694,7 +1725,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.mode,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "nn.batch_to_space_nd":
                 data = op_args[0]
@@ -1704,7 +1735,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.crops,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "nn.space_to_batch_nd":
                 data = op_args[0]
@@ -1715,7 +1746,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.pad_value,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "nn.space_to_depth":
                 data = op_args[0]
@@ -1726,27 +1757,27 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.mode,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "erf":
                 data = op_args[0]
                 new_call = relay.qnn.op.csi_erf(
-                    data, "float32", q_params, layer_name=get_layer_name(call.span, layer_index)
+                    data, "float32", q_params, layer_name=get_layer_name(call, layer_index)
                 )
             elif call.op.name == "sqrt":
                 data = op_args[0]
                 new_call = relay.qnn.op.csi_sqrt(
-                    data, "float32", q_params, layer_name=get_layer_name(call.span, layer_index)
+                    data, "float32", q_params, layer_name=get_layer_name(call, layer_index)
                 )
             elif call.op.name == "rsqrt":
                 data = op_args[0]
                 new_call = relay.qnn.op.csi_rsqrt(
-                    data, "float32", q_params, layer_name=get_layer_name(call.span, layer_index)
+                    data, "float32", q_params, layer_name=get_layer_name(call, layer_index)
                 )
             elif call.op.name == "sign":
                 data = op_args[0]
                 new_call = relay.qnn.op.csi_sign(
-                    data, "float32", q_params, layer_name=get_layer_name(call.span, layer_index)
+                    data, "float32", q_params, layer_name=get_layer_name(call, layer_index)
                 )
             elif call.op.name == "full":
                 data = op_args[0]
@@ -1755,7 +1786,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.shape,
                     cts.dtype,
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "take":
                 data = op_args[0]
@@ -1768,7 +1799,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.mode,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "tile":
                 data = op_args[0]
@@ -1777,7 +1808,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.reps,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "topk":
                 data = op_args[0]
@@ -1791,7 +1822,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.dtype,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "unravel_index":
                 data = op_args[0]
@@ -1801,7 +1832,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     shape,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             # for custom ops
             elif call.op.name == "nn.fsmn":
@@ -1834,7 +1865,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.unavailable_frames,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "cache_matmul":
                 new_call = relay.qnn.op.csi_cache_matmul(
@@ -1844,7 +1875,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.axes,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "cache_conv1d":
                 new_call = relay.qnn.op.csi_cache_conv1d(
@@ -1861,7 +1892,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.out_layout,
                     cts.out_dtype,
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             elif call.op.name == "nn.layer_norm":
                 new_call = relay.qnn.op.csi_layer_norm(
@@ -1872,7 +1903,7 @@ def convert_to_csi_qnn(mod, quant_params):
                     cts.scale,
                     "float32",
                     q_params,
-                    layer_name=get_layer_name(call.span, layer_index),
+                    layer_name=get_layer_name(call, layer_index),
                 )
             else:
                 raise ValueError("Cannot convert op:", call.op.name)
@@ -2222,6 +2253,7 @@ def fuse_layer(mod):
                     isinstance(pre_call, Call)
                     and (pre_call.op.name in ("qnn.csi.add", "qnn.csi.bias_add"))
                     and isinstance(pre_call.args[1], Constant)
+                    and sum(new_conv2d_attrs["padding"]) == 0
                 ):
                     data = pre_call.args[0]
                     weight = op_args[1]
@@ -2449,7 +2481,7 @@ def fuse_layer(mod):
         {FuseBiasMutator: "fuse_add_after_conv"},
         {FuseMulAfterConv: "fuse_mul_after_conv"},
         {FuseAddAfterConv: "fuse_add_after_conv"},
-        {FuseAddBeforeConv: "fuse_add_before_conv"},
+        # {FuseAddBeforeConv: "fuse_add_before_conv"},
         {FuseMulBeforeConv: "fuse_mul_before_conv"},
         {FuseClipMutator: "fuse_clip"},
         {FuseReluMutator: "fuse_relu"},
@@ -2785,6 +2817,50 @@ def optimize_quantization(mod, broadcast_quantization=False, target=""):
                 if in_changed and out_changed:
                     raise Exception("Input and output qinfo can't be changed at the same time.")
 
+        def asp_qinfo_mutator(self, in2out_list, out2in_list):
+            """qinfo mutator for asp"""
+
+            for node_name, node in self.indexd_graph.items():
+                op_name = node.op_name
+
+                if op_name in in2out_list:
+                    if node.attr["q_params"][0] == node.attr["q_params"][-1]:
+                        continue
+                    node.attr["q_params"][-1] = node.attr["q_params"][0]
+                    for out_name in node.outputs:
+                        self.update_node_in(out_name, node.name, node.attr["q_params"][-1])
+
+            while self.need_change:
+                node_name = self.need_change.pop()
+                node = self.indexd_graph[node_name]
+                in_changed = False
+                out_changed = False
+                if len(node.change_out) > 1:
+                    if node.op_name != "qnn.csi.split":
+                        raise Exception(
+                            "Multiple nodes attempt to modify the current node at the same time！"
+                        )
+                if node.change_in:
+                    for in_node_name, qinfo in node.change_in.items():
+                        in_idx = node.get_input_idx(in_node_name)
+                        node.attr["q_params"][in_idx] = qinfo
+                    in_changed = True
+                    node.change_in.clear()
+
+                if node.change_out:
+                    if node.op_name not in in2out_list:
+                        for _, qinfo in node.change_out.items():
+                            node.attr["q_params"][-1] = qinfo
+                            break
+                        # updat outputs
+                        for out_name in node.outputs:
+                            self.update_node_in(out_name, node.name, node.attr["q_params"][-1])
+                            out_changed = True
+                    node.change_out.clear()
+
+                if in_changed and out_changed:
+                    raise Exception("Input and output qinfo can't be changed at the same time.")
+
         def qinfo_exchange(self, in2out_list, out2in_list, target):
             """change node quant params"""
             in2out_list = ["qnn.csi." + op for op in in2out_list]
@@ -2793,6 +2869,8 @@ def optimize_quantization(mod, broadcast_quantization=False, target=""):
                 self.light_qinfo_mutator(in2out_list, out2in_list)
             elif target == "anole":
                 self.anole_qinfo_mutator(in2out_list, out2in_list)
+            elif target == "asp":
+                self.asp_qinfo_mutator(in2out_list, out2in_list)
             else:
                 self.light_qinfo_mutator(in2out_list, out2in_list)
 
@@ -2877,6 +2955,9 @@ def optimize_quantization(mod, broadcast_quantization=False, target=""):
                 "global_maxpool2d",
             ]
             mod["main"] = InsertAddBeforeConcat(out2in_list + in2out_list).visit(mod["main"])
+        elif target in ["asp"]:
+            out2in_list = []
+            in2out_list = ["avgpool2d", "maxpool2d"]
         else:
             out2in_list = ["concatenate"]
             in2out_list = ["transpose", "reshape", "upsampling", "maxpool2d"]
@@ -2884,4 +2965,31 @@ def optimize_quantization(mod, broadcast_quantization=False, target=""):
         index_graph_creater.qinfo_exchange(in2out_list, out2in_list, target)
         mod["main"] = UpdataQparams(index_graph_creater.get_graph()).visit(mod["main"])
 
+    return mod
+
+
+def rename_call(mod, call_count):
+    """Specify name for call node which has empty layer_name."""
+
+    class RenameCall(relay.ExprMutator):
+        """Helper class"""
+
+        def __init__(self, call_count):
+            super(RenameCall, self).__init__()
+            self.call_count = call_count
+
+        def visit_call(self, call):
+            op_args = [self.visit(arg) for arg in call.args]
+            if str(call.attrs.layer_name) == "":
+                attrs = _qnn_attrs(call.attrs)
+                op_name = call.op.name.split(".")[-1]
+                attrs["layer_name"] = op_name + "_" + str(self.call_count)
+                new_call = _get_csi_op(call.op.name)(*op_args, **attrs)
+
+                self.call_count += 1
+            else:
+                new_call = Call(call.op, op_args, call.attrs, call.type_args, call.span)
+            return new_call
+
+    mod["main"] = RenameCall(call_count).visit(mod["main"])
     return mod

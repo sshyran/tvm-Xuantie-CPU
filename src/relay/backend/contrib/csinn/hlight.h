@@ -36,22 +36,6 @@ namespace contrib {
 class CodegenHLight : public CodegenCSINN {
  public:
   CodegenHLight() : CodegenCSINN() {
-    auto qs = cfg->quantization_scheme;
-    if (qs == "CSINN_QUANT_UINT8_ASYM") {
-      base_dtype_ = "CSINN_DTYPE_UINT8";
-    } else if (qs == "CSINN_QUANT_INT8_SYM") {
-      base_dtype_ = "CSINN_DTYPE_INT8";
-    } else if (qs == "CSINN_QUANT_INT8_ASYM") {
-      base_dtype_ = "CSINN_DTYPE_INT8";
-    } else if (qs == "CSINN_QUANT_INT16_SYM") {
-      base_dtype_ = "CSINN_DTYPE_INT16";
-    } else if (qs == "CSINN_QUANT_FLOAT16") {
-      base_dtype_ = "CSINN_DTYPE_FLOAT16";
-    } else if (qs == "CSINN_QUANT_BFLOAT16") {
-      base_dtype_ = "CSINN_DTYPE_BFLOAT16";
-    } else {
-      base_dtype_ = "CSINN_DTYPE_FLOAT32";
-    }
     target_op_list = {"qnn.csi.conv2d",
                       "qnn.csi.concatenate",
                       "qnn.csi.relu",
@@ -75,9 +59,6 @@ class CodegenHLight : public CodegenCSINN {
                       "qnn.csi.reshape"};
   }
   virtual ~CodegenHLight() {}
-
-  virtual void CreateTensor(string name, string data, std::vector<int> shape,
-                            QuantParams quant_params, string dtype);
   virtual void params_common_setup(std::ostringstream& decl, const CallNode* call, string op_name,
                                    string params_name, string layer_name, string layout);
 
@@ -88,8 +69,9 @@ class CodegenHLight : public CodegenCSINN {
   void FreeTensor(const Expr& expr, string name) {}
   void EmitSessionSetup();
   void ModelBinarySave();
+  string EmitGraph();
   virtual void GetSymScale(float min_value, float max_value, int bits, Qinfo* qinfo);
-  void SessionRunMode() { PrintOneLine(code_stream_, "sess->base_run_mode = CSINN_RM_CPU_GRAPH;"); }
+  void SessionRunMode() { func_def_.OneLine("sess->base_run_mode = CSINN_RM_CPU_GRAPH;"); }
 };
 
 }  // namespace contrib

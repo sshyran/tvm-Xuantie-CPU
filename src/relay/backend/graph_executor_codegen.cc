@@ -443,7 +443,7 @@ class GraphExecutorCodegen : public backend::MemoizedExprTranslator<std::vector<
         return AddNode(node, call);
       }
     } else if (!call_node->attrs.defined()) {  // Call is an extern function
-      std::cout << "call_node: \n" << PrettyPrint(call) << std::endl;
+      // std::cout << "call_node: \n" << PrettyPrint(call) << std::endl;
       const auto* func = call_node->op.as<GlobalVarNode>();
       ICHECK(func) << "Expected the operator to be a global var, but got "
                    << call_node->op->GetTypeKey();  // getting a relay fn here, not sure why.

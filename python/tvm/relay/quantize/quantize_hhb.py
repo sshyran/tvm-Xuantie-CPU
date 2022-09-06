@@ -17,9 +17,9 @@
 # pylint: disable=invalid-name, wildcard-import, unused-wildcard-import
 """Automatic quantization toolkit."""
 import logging
+import os
+import tvm
 from tvm import relay
-from tvm.relay.frontend.common import infer_shape as _infer_shape
-from tvm.relay.frontend.common import create_span
 from .csi_layout_convert import csi_layout_convert
 from .custom_fusion_pass import FuseCacheMatMul, FuseLayerNormal, TConv1dAddT
 from .custom_fusion_pass import Conv2dSqueezeAdd, FuseCacheConv1d
@@ -31,6 +31,7 @@ from .op_spliter import ConvSpliter
 from .. import transform as _transform
 from .. import expr as _expr
 from ...ir import transform
+from ..frontend.common import create_span
 
 from ._convert_to_csi import (
     calibration,
@@ -38,7 +39,11 @@ from ._convert_to_csi import (
     fuse_layer,
     optimize_quantization,
     current_csinn_config,
+    csi_op,
+    rename_call,
 )
+
+from .auto_hybrid_quantize import DumpLayerOutput, ModelQuantizationInfo, to_json
 
 LOG = 25
 logger = logging.getLogger("HHB")
@@ -189,68 +194,8 @@ def _check_unsupported_ops(target, model):
         "vision.roi_pool",
         "vision.unpooling",
     ]
-    ch8601_op_list = [
-        "add",
-        "clip",
-        "concatenate",
-        "exp",
-        "image.resize2d",
-        "mean",
-        "multiply",
-        "nn.avg_pool2d",
-        "nn.batch_flatten",
-        "nn.bias_add",
-        "nn.conv2d",
-        "nn.conv2d_transpose",
-        "nn.dense",
-        "nn.global_avg_pool2d",
-        "nn.global_max_pool2d",
-        "nn.leaky_relu",
-        "nn.lrn",
-        "nn.max_pool2d",
-        "nn.max_pool2d_with_argmax",
-        "nn.prelu",
-        "nn.relu",
-        "nn.softmax",
-        "nn.upsampling",
-        "reshape",
-        "sigmoid",
-        "split",
-        "squeeze",
-        "strided_slice",
-        "transpose",
-        "vision.max_pool2d_location",
-        "vision.proposal",
-        "vision.psroipooling",
-        "vision.unpooling",
-    ]
-    dp1k_op_list = [
-        "add",
-        "clip",
-        "concatenate",
-        "image.resize2d",
-        "mean",
-        "multiply",
-        "nn.avg_pool2d",
-        "nn.global_avg_pool2d",
-        "nn.bias_add",
-        "nn.conv2d",
-        "nn.conv2d_transpose",
-        "nn.dense",
-        "nn.max_pool2d",
-        "nn.leaky_relu",
-        "nn.prelu",
-        "nn.relu",
-        "nn.softmax",
-        "nn.upsampling",
-        "reshape",
-        "sigmoid",
-        "strided_slice",
-        "transpose",
-    ]
     light_op_list = [
         "add",
-        "argmax",
         "cast",
         "clip",
         "concatenate",
@@ -318,8 +263,6 @@ def _check_unsupported_ops(target, model):
         "anole": anole_op_list,
         "light": light_op_list,
         "light_new": light_op_list,
-        "ch8601": ch8601_op_list,
-        "dp1k": dp1k_op_list,
         "c906": x86_op_list,
         "c908": x86_op_list,
         "i805": x86_op_list,
@@ -430,16 +373,9 @@ def InsertNOp(mod):
                 r_pre_call = op_args[1]
 
                 if isinstance(l_pre_call, _expr.Call) and l_pre_call.op.name == "nn.leaky_relu":
-                    shape = _infer_shape(l_pre_call)
-                    mul_call = relay.op.strided_slice(l_pre_call, [0, 0, 0, 0], shape)
-                    mul_call = _expr.Call(
-                        mul_call.op,
-                        mul_call.args,
-                        mul_call.attrs,
-                        mul_call.type_args,
-                        create_span("strided_slice_inserted_between_leakyrelu_add"),
-                    )
+                    mul_call = relay.op.add(l_pre_call, relay.op.const([2.0], "float32"))
                     new_call = relay.op.add(mul_call, r_pre_call)
+                    new_call = relay.op.add(new_call, relay.op.const([-2.0], "float32"))
                     new_call = _expr.Call(
                         new_call.op, new_call.args, new_call.attrs, new_call.type_args, call.span
                     )
@@ -450,6 +386,100 @@ def InsertNOp(mod):
     mod["main"] = BetweenLekayReLUAndAdd().visit(mod["main"])
 
     return mod
+
+
+def save_const_output(mod, output_dir):
+    """Save and remove const output"""
+
+    class save_output_in_tuple(relay.ExprMutator):
+        """Save and remove const output in tuple"""
+
+        first_visit_expr = True
+        idx = 0
+
+        def visit_call(self, call):
+            self.first_visit_expr = False
+            new_fn = self.visit(call.op)
+            new_args = [self.visit(arg) for arg in call.args]
+            return _expr.Call(new_fn, new_args, call.attrs, call.type_args, call.span)
+
+        def visit_tuple(self, tup):
+            if self.first_visit_expr:
+                self.first_visit_expr = False
+                new_fup = []
+                for field in tup.fields:
+                    if isinstance(field, _expr.Constant):
+                        const_output = field.data.asnumpy()
+                        const_output.tofile(
+                            os.path.join(output_dir, "_const_output.{}.tensor".format(self.idx)),
+                            "\n",
+                        )
+                        self.idx = self.idx + 1
+                    else:
+                        new_fup.append(self.visit(field))
+                return _expr.Tuple(new_fup, tup.span)
+
+            return _expr.Tuple([self.visit(field) for field in tup.fields], tup.span)
+
+    mod["main"] = save_output_in_tuple().visit(mod["main"])
+
+    return mod
+
+
+def rename_constant(mod):
+    """Specify name for constant node."""
+
+    def _get_new_const(node, new_name):
+        new_span = create_span(new_name)
+        new_node = _expr.const(node.data.asnumpy(), dtype=node.checked_type.dtype, span=new_span)
+        return new_node
+
+    class RenameConstant(relay.ExprMutator):
+        """Specify name for constant node."""
+
+        def visit_call(self, call):
+            op_args = [self.visit(arg) for arg in call.args]
+
+            if call.op.name in csi_op().conv_handle.keys():
+                weight = op_args[1]
+                bias = op_args[2]
+                op_args[1] = _get_new_const(weight, call.attrs.layer_name + ":weight")
+
+                if bias and isinstance(bias, _expr.Constant):
+                    op_args[2] = _get_new_const(bias, call.attrs.layer_name + ":bias")
+            else:
+                for idx, arg in enumerate(op_args):
+                    if isinstance(arg, _expr.Constant):
+                        op_args[idx] = _get_new_const(
+                            arg, call.attrs.layer_name + ":const_" + str(idx)
+                        )
+            new_call = _expr.Call(call.op, op_args, call.attrs, call.type_args, call.span)
+            return new_call
+
+    mod["main"] = RenameConstant().visit(mod["main"])
+    return mod
+
+
+def convert_csinn_options(config):
+    """Convert CSINNConfigNode type into dict"""
+    res = {}
+    exclude_attr = ["same_as", "sid", "handle", "_move"]
+    for attr in dir(config):
+        if (attr.startswith("__") and attr.endswith("__")) or attr in exclude_attr:
+            continue
+        curr_value = getattr(config, attr)
+        if isinstance(curr_value, tvm.ir.container.Array):
+            res[attr] = [
+                str(a) if isinstance(a, tvm.runtime.container.String) else a.value
+                for a in curr_value
+            ]
+        elif isinstance(curr_value, (str, int, float, bool)):
+            res[attr] = curr_value
+        elif curr_value is None:
+            res[attr] = None
+        else:
+            res[attr] = curr_value.value
+    return res
 
 
 def quantize_hhb(module, params=None, dataset=None, target="x86_ref"):
@@ -507,6 +537,8 @@ def quantize_hhb(module, params=None, dataset=None, target="x86_ref"):
     logger.debug("Optimized model:")
     logger.debug(module["main"])
     logger.log(LOG, "Optimization completed!")
+    module = save_const_output(module, os.path.dirname(curr_qconfig.params_path))
+    logger.debug("save const output")
 
     quanted_model = _check_unsupported_ops(target, module)
 
@@ -553,16 +585,52 @@ def quantize_hhb(module, params=None, dataset=None, target="x86_ref"):
     )
 
     logger.log(LOG, "Start operator split.")
-    split_pass = [ConvSpliter(curr_qconfig)]
+    split_pass = [_transform.InferType(), ConvSpliter(curr_qconfig)]
     spliter = transform.Sequential(split_pass)
     csi_module = spliter(csi_module)
     logger.log(LOG, "Operator split completed!")
 
     csi_module = relay.transform.InferType()(csi_module)
-    if curr_qconfig.layout == "NHWC":
-        logger.log(LOG, "Start layout convert.")
-        csi_module = csi_layout_convert(csi_module)
-        logger.log(LOG, "Layout convert completed!")
+
+    logger.log(LOG, "Start layout convert.")
+    csi_module = csi_layout_convert(
+        csi_module, dest_layout=curr_qconfig.layout, align=curr_qconfig.h_align
+    )
+    logger.log(LOG, "Layout convert completed!")
+
+    logger.debug("Start specify name for constant node.")
+    csi_module = relay.transform.InferType()(csi_module)
+    csi_module = rename_constant(csi_module)
+    logger.debug("specify name for constant node completed!")
+
+    logger.debug("Start specify name for call node.")
+    csi_module = rename_call(csi_module, call_count)
+    logger.debug("specify name for call node completed!")
+
+    if curr_qconfig.dump_quantization_loss or curr_qconfig.auto_hybrid_quantization:
+        logger.log(LOG, "Start quantization analysis.")
+        config_dict = convert_csinn_options(curr_qconfig)
+        target_dir = os.path.dirname(config_dict["params_path"])
+
+        dlo = DumpLayerOutput(dataset, config_dict)
+        dlo.visit(csi_module["main"])
+
+        mqi = ModelQuantizationInfo()
+        mqi.update_layer_info(dlo.float_outs_map, dlo.qnn_outs_map, dlo.quant_info, config_dict)
+
+        if curr_qconfig.auto_hybrid_quantization:
+            mqi.update_hybrid_layers(
+                config_dict["quantization_loss_algorithm"],
+                config_dict["quantization_loss_threshold"],
+            )
+        json_data = mqi.to_dict()
+        to_json(json_data, os.path.join(target_dir, "model.quant.json"))
+        logger.log(LOG, "Quantization analysis completed!")
+        logger.log(
+            LOG,
+            "Quantization information can be found in %s",
+            os.path.join(target_dir, "model.quant.json"),
+        )
 
     csi_module = relay.transform.InferType()(csi_module)
     logger.info("Quantized model:")

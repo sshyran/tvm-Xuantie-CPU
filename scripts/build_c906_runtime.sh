@@ -16,19 +16,10 @@
 # specific language governing permissions and limitations
 # under the License.
 
-
-set -euo pipefail
-
-mkdir -p llvm_build
-mkdir -p llvm_install
-
-SRC_BASE=$PWD
-
-cd llvm_build
-
-# LLVM_INSTALL_UTILS install utilities to install directory
-cmake ../../llvm-project/llvm/ -G "Unix Makefiles" -DCMAKE_INSTALL_PREFIX="$SRC_BASE/llvm_install" -DCMAKE_BUILD_TYPE=Release -DLLVM_INSTALL_UTILS=ON -DLLVM_ENABLE_PROJECTS="libcxx;libcxxabi" -DLLVM_TARGETS_TO_BUILD="X86;ARM;AArch64" -DLLVM_EXPERIMENTAL_TARGETS_TO_BUILD="RISCV"
-#cmake --build. --target install
-make -j32
-make install
-echo "Build LLVM " "$SRC_BASE/llvm_install"
+rm build_rv -rf
+mkdir build_rv
+cd build_rv
+cp ../cmake/c906_runtime_config.cmake config.cmake
+cmake ..
+cp ../install_nn2/lib/libshl_c906.so .
+make runtime tvm_rpc -j8

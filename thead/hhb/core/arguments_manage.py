@@ -16,7 +16,9 @@
 # under the License.
 """Manage command line arguments."""
 from collections import OrderedDict
+from email.policy import default
 import os
+from random import choices
 import sys
 import argparse
 
@@ -72,14 +74,25 @@ def add_preprocess_argument(parser):
         help="Set the mean value of input, multiple values are separated by space, "
         "default is 0.",
     )
-    parser.add_argument(
+
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
         "-s",
         "--data-scale",
         type=float,
         default="1",
         metavar="",
-        help="Scale number for inputs normalization, default is 1.",
+        help="Scale number(mul) for inputs normalization(data=img*scale), default is 1.",
     )
+    group.add_argument(
+        "-sv",
+        "--data-scale-div",
+        type=float,
+        default="1",
+        metavar="",
+        help="Scale number(div) for inputs normalization(data=img/scale), default is 1.",
+    )
+
     parser.add_argument(
         "-r",
         "--data-resize",
@@ -91,8 +104,8 @@ def add_preprocess_argument(parser):
     parser.add_argument(
         "--pixel-format",
         choices=["RGB", "BGR"],
-        default="BGR",
-        help="The pixel format of input data, defalut is BGR",
+        default="RGB",
+        help="The pixel format of image data, defalut is RGB",
     )
     parser.add_argument(
         "--data-layout",
@@ -151,6 +164,12 @@ def add_import_argument(parser):
         choices=get_frontend_names(),
         help="Specify input model format:{}".format(get_frontend_names()),
     )
+    parser.add_argument(
+        "--reorder-pixel-format",
+        action="store_true",
+        help="If original model's input data pixel format is rgb, then covert it to bgr;"
+        "otherwise, then convert it to rgb.",
+    )
 
 
 @get_parameters_info("optimize")
@@ -169,8 +188,6 @@ def add_optimize_argument(parser):
             "c906",
             "c908",
             "x86_ref",
-            "ch8601",
-            "dp1k",
             "unset",
         ],
         help="Set target device, default is anole.",
@@ -210,10 +227,35 @@ def add_quantize_argument(parser):
             "int16_sym",
             "float16",
             "bfloat16",
+            "float32",
             "unset",
         ],
         default="unset",
         help="Scheme of quantization. default is unset, and select scheme by --board.",
+    )
+    parser.add_argument(
+        "--auto-hybrid-quantization",
+        action="store_true",
+        help="If set, quantize model automatically.",
+    )
+    parser.add_argument(
+        "--quantization-loss-algorithm",
+        type=str,
+        choices=["cos_similarity", "mse", "kl_divergence", "cross_entropy", "gini"],
+        default="cos_similarity",
+        help="How to calculate accuracy loss for every layer.",
+    )
+    parser.add_argument(
+        "--quantization-loss-threshold",
+        type=float,
+        default=0.99,
+        help="The threshold that will determin thich layer will be quantized with hybrid way."
+        "If it is None, we will select threshold automatically.",
+    )
+    parser.add_argument(
+        "--dump-quantization-loss",
+        action="store_true",
+        help="If set, dump quantizaiton loss into file.",
     )
     parser.add_argument(
         "--hybrid-quantization-scheme",
@@ -401,8 +443,12 @@ def add_quantize_argument(parser):
         help=argparse.SUPPRESS,
         # help="This parameter is used to convert quanted qnn model to relay.",
     )
+
+
+@get_parameters_info("hardware")
+def add_hardware_argument(parser):
     parser.add_argument(
-        "--h-sram-size",
+        "--hardware-sram-size",
         type=str,
         default=None,
         metavar="",
@@ -410,31 +456,55 @@ def add_quantize_argument(parser):
         # help="Set the size of sram. The unit must in [m, M, KB, kb].",
     )
     parser.add_argument(
-        "--h-max-groups",
+        "--hardware-max-groups",
         type=int,
         default=0,
         help=argparse.SUPPRESS,
         # help="This parameter is used to describe the maximum number of groups supported by hardware.",
     )
     parser.add_argument(
-        "--h-max-out-channel",
+        "--hardware-max-out-channel",
         type=int,
         default=0,
         help=argparse.SUPPRESS,
         # help="This parameter is used to describe the maximum number of output channel supported by hardware.",
     )
     parser.add_argument(
-        "--h-max-kernel-size",
+        "--hardware-max-kernel-size",
         type=int,
         default=0,
         help=argparse.SUPPRESS,
         # help="This parameter is used to describe the size of sram.",
     )
     parser.add_argument(
-        "--h-contain-weight",
+        "--hardware-contain-weight",
         action="store_true",
         help=argparse.SUPPRESS,
         # help="This parameter is used to describe whether the weight size should be contained when split ops.",
+    )
+    parser.add_argument(
+        "--hardware-alignment",
+        type=int,
+        choices=[1, 8, 16, 32],
+        default=1,
+        help=argparse.SUPPRESS,
+        # help="This parameter describes whether the hardware requires data alignment.",
+    )
+    parser.add_argument(
+        "--structed-sparsity",
+        default="unset",
+        choices=[
+            "asp4:2",
+            "asp4:1",
+            "unset",
+        ],
+        help="Specify the structed sparsity scheme, default is unset.",
+    )
+    parser.add_argument(
+        "--kernel-parallel",
+        default="0",
+        type=int,
+        help="Specify every layer's kernel parallel, default is 0, auto choose best parallel.",
     )
 
 
@@ -532,6 +602,12 @@ def add_codegen_argument(parser):
         "save_and_run: execute and save model.",
     )
     parser.add_argument(
+        "--model-priority",
+        default=0,
+        type=int,
+        help="Set model priority, only for light now.\n" "0 is lowest, 1 is medium, 2 is highest.",
+    )
+    parser.add_argument(
         "--without-preprocess",
         action="store_true",
         help="Do not generate preprocess codes.",
@@ -579,7 +655,7 @@ def add_codegen_argument(parser):
         "2: dma buffer.",
     )
     parser.add_argument(
-        "--dynamic-bc-reg", action="store_true", help="Emit bc_map file to reduce elf size on RTOS."
+        "--dynamic-cb-reg", action="store_true", help="Emit cb_map file to reduce elf size on RTOS."
     )
 
 
@@ -712,8 +788,8 @@ def parse_sram_size(filtered_args, extra=None):
             return int(sram_size)
         return 0
 
-    if hasattr(filtered_args, "h_sram_size"):
-        filtered_args["h_sram_size"] = convert_str2int(filtered_args["h_sram_size"])
+    if hasattr(filtered_args, "hardware_sram_size"):
+        filtered_args["hardware_sram_size"] = convert_str2int(filtered_args["hardware_sram_size"])
 
 
 def update_arguments_by_file(args, origin_args):
@@ -839,6 +915,7 @@ class ArgumentManage(object):
         add_import_argument(parser)
         add_optimize_argument(parser)
         add_quantize_argument(parser)
+        add_hardware_argument(parser)
         add_preprocess_argument(parser)
         add_common_argument(parser)
         add_simulate_argument(parser)

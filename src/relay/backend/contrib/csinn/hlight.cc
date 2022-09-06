@@ -34,43 +34,44 @@ namespace relay {
 namespace contrib {
 using namespace backend;
 
-void CodegenHLight::CreateTensor(string name, string data, std::vector<int> shape,
-                                 QuantParams quant_params, string dtype) {
-  std::ostringstream t0;
-  t0 << "struct csi_tensor *" << name << " = csi_alloc_tensor(sess)";
-  PushDeclLine(t0);
-  t0 << name << "->name = "
-     << "\"" << name << "\"";
-  PushDeclLine(t0);
-  t0 << name << "->layout = " << GetCSINNActLayout(shape);
-  PushDeclLine(t0);
-  SetDim(name, shape);
-  t0 << name << "->qinfo = (struct csi_quant_info *)(params_base + " << to_string(constant_offset)
-     << ")";
-  PushDeclLine(t0);
-  t0 << name << "->quant_channel = " << to_string(quant_params.q_size);
-  PushDeclLine(t0);
-  constant_offset += quant_params.q_size * sizeof(Qinfo);
-  qinfo_list_.push_back(quant_params);
-  flag_list_.push_back(QINFO);
-}
-
 void CodegenHLight::params_common_setup(std::ostringstream& decl, const CallNode* call,
                                         string op_name, string params_name, string layer_name,
-                                        string layout = "") {
+                                        string layout = "CSINN_LAYOUT_NCHW") {
   std::ostringstream t0;
-  t0 << params_name << "->base.layout = CSINN_LAYOUT_NCHW";
-  PushDeclLine(t0);
-  t0 << params_name << "->base.name = "
-     << "\"" << op_name + "_" + layer_name << "_" << params_idx_ << "\"";
-  PushDeclLine(t0);
-  params_idx_++;
-  if (InOpList(call)) {
-    t0 << params_name << "->base.api = CSINN_LIGHT";
-    PushDeclLine(t0);
+  if (!(layout_ == "NCHW" && layout == "CSINN_LAYOUT_NCHW")) {
+    t0 << params_name << "->base.layout = CSINN_LAYOUT_" << layout_;
+    func_def_.PushDecl(t0);
   }
-  t0 << "csi_" << op_name << "_init" << decl.str();
-  PushDeclLine(t0);
+
+  string complete_name = get_complete_layer_name(op_name, layer_name);
+  t0 << params_name << "->base.name = "
+     << "\"" << complete_name << "\"";
+  func_def_.PushDecl(t0);
+  params_idx_++;
+  if (InOpList(call) || (target_ == "light" && auto_hybrid_quantization)) {
+    t0 << params_name << "->base.api = CSINN_LIGHT";
+    func_def_.PushDecl(t0);
+  }
+
+  bool is_layer_hybrid = is_contain_item<string>(hybrid_layer_name, complete_name);
+  if (is_layer_hybrid) {
+    if (hybrid_cfg->quantization_scheme != "unset" &&
+        hybrid_cfg->quantization_scheme != "CSINN_QUANT_INT4_ASYM_W_SYM" &&
+        hybrid_cfg->quantization_scheme != "CSINN_QUANT_INT8_ASYM_W_SYM") {
+      t0 << params_name << "->base.quant_type = " << hybrid_cfg->quantization_scheme;
+      func_def_.PushDecl(t0);
+    }
+  } else {
+    if (cfg->quantization_scheme != "unset" &&
+        cfg->quantization_scheme != "CSINN_QUANT_INT4_ASYM_W_SYM" &&
+        cfg->quantization_scheme != "CSINN_QUANT_INT8_ASYM_W_SYM" && !hybrid_layer_name.empty()) {
+      t0 << params_name << "->base.quant_type = " << cfg->quantization_scheme;
+      func_def_.PushDecl(t0);
+    }
+  }
+
+  t0 << "csinn_" << op_name << "_init" << decl.str();
+  func_def_.PushDecl(t0);
 }
 
 void CodegenHLight::GetSymScale(float min_value, float max_value, int bits, Qinfo* qinfo) {
@@ -80,67 +81,54 @@ void CodegenHLight::GetSymScale(float min_value, float max_value, int bits, Qinf
   int exponent;
   frexp(scale, &exponent);
   qinfo->scale = 1.0f / std::pow(2, exponent - 1);
-  qinfo->zero_point = 1;
-  qinfo->max = 127 * qinfo->scale;
-  qinfo->min = -128 * qinfo->scale;
+  qinfo->zero_point = 0;
+  qinfo->max = abs_max;
+  qinfo->min = -abs_max;
 }
 
 void CodegenHLight::EmitSessionSetup(void) {
   std::ostringstream t0;
   t0 << "void *" << ext_func_id_ << "_(";
   t0 << "char *params_base) {";
-  PrintOneLine(code_stream_, t0);
-  EnterScope();
+  func_def_.OneLine(t0);
+  func_def_.EnterScope();
 
-  PrintOneLine(code_stream_, "struct csi_session *sess = csi_alloc_session();");
+  func_def_.OneLine("struct csinn_session *sess = csinn_alloc_session();");
   SessionRunMode();
   ModelBinarySave();
   t0 << "sess->base_api = " << target_name_ << ";";
-  PrintOneLine(code_stream_, t0);
+  func_def_.OneLine(t0);
   t0 << "sess->base_dtype = " << base_dtype_ << ";";
-  PrintOneLine(code_stream_, t0);
+  func_def_.OneLine(t0);
   if (debug_level_ == "INFO") {
-    PrintOneLine(code_stream_, "sess->debug_level = CSI_DEBUG_LEVEL_INFO;");
+    func_def_.OneLine("sess->debug_level = CSINN_DEBUG_LEVEL_INFO;");
   }
-  PrintOneLine(code_stream_, "csi_session_init(sess);");
+  func_def_.OneLine("csinn_session_init(sess);");
 
-  t0 << "csi_set_input_number(" << ext_func_args_.size() << ", sess);";
-  PrintOneLine(code_stream_, t0);
-  t0 << "csi_set_output_number(" << output_list_.size() << ", sess);";
-  PrintOneLine(code_stream_, t0);
-  // Function body
-  PrintNewLine(code_stream_);
-  for (auto decl : buf_decl_) {
-    PrintOneLine(code_stream_, decl);
-  }
-  PrintNewLine(code_stream_);
+  t0 << "csinn_set_input_number(" << ext_func_args_.size() << ", sess);";
+  func_def_.OneLine(t0);
+  t0 << "csinn_set_output_number(" << output_list_.size() << ", sess);";
+  func_def_.OneLine(t0);
+
+  func_def_.NewLine();
   for (uint32_t i = 0; i < ext_func_args_.size(); i++) {
-    std::string new_name = CodegenCSINN::replace(ext_func_args_[i]->name_hint());
-    auto iter = io_nodes.find(new_name);
-    if (iter == io_nodes.end()) {
-      CHECK(0);
-    }
-    QuantParams q_params = iter->second;
-    string in_name = q_params.name;
+    std::string in_name = CodegenCSINN::replace(ext_func_args_[i]->name_hint());
     std::ostringstream t1;
-    t1 << "csi_set_tensor_entry(" << in_name << ", sess);\n";
-    PrintIndents(t1);
-    t1 << "csi_set_input(" << i << ", " << in_name << ", sess);";
-    PrintOneLine(code_stream_, t1);
+    t1 << "csinn_set_tensor_entry(" << in_name << ", sess)";
+    func_def_.PushDecl(t1);
+    t1 << "csinn_set_input(" << i << ", " << in_name << ", sess)";
+    func_def_.PushDecl(t1);
   }
 
-  PrintNewLine(code_stream_);
-  for (auto stmt : ext_func_body) {
-    PrintOneLine(code_stream_, stmt);
-  }
+  func_def_.BufToCode();
 
   int output_index = 0;
   // emit normal outputs
   for (uint32_t i = 0; i < output_list_.size(); i++) {
     if (!output_list_[i].is_const) {
       string output_name = output_list_[i].name;
-      t0 << "csi_set_output(" << output_index++ << ", " << output_name << ", sess);";
-      PrintOneLine(code_stream_, t0);
+      t0 << "csinn_set_output(" << output_index++ << ", " << output_name << ", sess);";
+      func_def_.OneLine(t0);
     }
   }
 
@@ -149,13 +137,13 @@ void CodegenHLight::EmitSessionSetup(void) {
     if (output_list_[i].is_const) {
       t0 << output_list_[i].name << "->name = "
          << "\"" << output_list_[i].name << "\";";
-      PrintOneLine(code_stream_, t0);
+      func_def_.OneLine(t0);
       t0 << output_list_[i].name << "->dtype = CSINN_DTYPE_FLOAT32;";
-      PrintOneLine(code_stream_, t0);
+      func_def_.OneLine(t0);
       t0 << output_list_[i].name << "->is_const = 1;";
-      PrintOneLine(code_stream_, t0);
-      t0 << "csi_set_output(" << output_index++ << ", " << output_list_[i].name << ", sess);";
-      PrintOneLine(code_stream_, t0);
+      func_def_.OneLine(t0);
+      t0 << "csinn_set_output(" << output_index++ << ", " << output_list_[i].name << ", sess);";
+      func_def_.OneLine(t0);
     }
   }
 
@@ -166,23 +154,32 @@ void CodegenHLight::EmitSessionSetup(void) {
   double fix_height = opt_cfg->light_input_fix_height;
   double fix_width = opt_cfg->light_input_fix_width;
   if (fix_height != 0) {
-    t0 << "csi_pnna_set_input_strides(sess, 1, " << fix_height << " ," << fix_width << ");";
-    PrintOneLine(code_stream_, t0);
+    t0 << "shl_pnna_set_input_strides(sess, 1, " << fix_height << " ," << fix_width << ");";
+    func_def_.OneLine(t0);
   }
 
-  PrintNewLine(code_stream_);
-  PrintOneLine(code_stream_, "csi_session_setup(sess);");
-  PrintOneLine(code_stream_, "return sess;");
-  ExitScope();
-  PrintOneLine(code_stream_, "}");
+  func_def_.NewLine();
+  func_def_.OneLine("csinn_session_setup(sess);");
+  func_def_.OneLine("return sess;");
+  func_def_.ExitScope();
+  func_def_.OneLine("}");
 }
 
 void CodegenHLight::ModelBinarySave() {
   std::ostringstream t0;
-  t0 << "sess->model_name = \"csi.mbs.bin\";";
-  PrintOneLine(code_stream_, t0);
   t0 << "sess->base_quant_type = " << cfg->quantization_scheme << ";";
-  PrintOneLine(code_stream_, t0);
+  func_def_.OneLine(t0);
+}
+
+string CodegenHLight::EmitGraph(void) {
+  EmitVersion();
+  EmitHeader();
+  EmitSessionSetup();
+  EmitSessionRun();
+  EmitNBGSetup();
+  DumpConstant();
+  DumpGraphInfo();
+  return func_def_.str();
 }
 
 }  // namespace contrib

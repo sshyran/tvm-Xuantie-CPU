@@ -166,6 +166,10 @@ if not CONDA_BUILD:
 
 setup_kwargs = {}
 
+LIB_LIST.append(os.path.join(CURRENT_DIR, "..", "install_nn2"))
+LIB_LIST.append(os.path.join(CURRENT_DIR, "..", "include"))
+LIB_LIST.append(os.path.join(CURRENT_DIR, "..", "3rdparty", "dlpack"))
+
 # For bdist_wheel only
 if wheel_include_libs:
     with open("MANIFEST.in", "w") as fo:
@@ -207,7 +211,7 @@ extras_require = {
 }
 
 setup(
-    name="tvm",
+    name="hhb-tvm",
     version=__version__,
     description="TVM: An End to End Tensor IR/DSL Stack for Deep Learning Systems",
     zip_safe=False,

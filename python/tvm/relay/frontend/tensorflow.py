@@ -634,8 +634,13 @@ class GraphProto(object):
             self._backtrack_construct(node.name)
 
         # Second, parse other nodes to re-create TF graph using Relay operators.
+        len_output = -1 if outputs is None else len(outputs)
         for node in graph.node:
             self._backtrack_construct(node.name)
+            if outputs and node.name.split(":")[0] in outputs:
+                len_output -= 1
+            if len_output == 0:
+                break
 
         out = []
         if outputs is None:

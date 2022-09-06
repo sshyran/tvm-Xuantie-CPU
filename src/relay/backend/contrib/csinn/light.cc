@@ -46,8 +46,6 @@ void CodegenLight::VisitExpr_(const CallNode* call) {
   }
   if (IsOp(call, "qnn.csi.add")) {
     DisoOp(call, "add");
-  } else if (IsOp(call, "qnn.csi.argmax")) {
-    Reduce(call, "argmax", "int32_t");
   } else if (IsOp(call, "qnn.csi.avgpool2d")) {
     AvgPool2d(call);
   } else if (IsOp(call, "qnn.csi.batch_to_space_nd")) {
@@ -141,68 +139,55 @@ void CodegenLight::VisitExpr_(const CallNode* call) {
 }
 void CodegenLight::EmitHeader(void) {
   std::ostringstream t0;
-  PrintOneLine(code_stream_, "#include <csi_pnna.h>");
-  PrintNewLine(code_stream_);
+  func_def_.OneLine("#include <shl_pnna.h>");
+  func_def_.NewLine();
 }
 
 void CodegenLight::EmitSessionSetup(void) {
   std::ostringstream t0;
   t0 << "void *" << ext_func_id_ << "_(";
   t0 << "char *params_base) {";
-  PrintOneLine(code_stream_, t0);
-  EnterScope();
+  func_def_.OneLine(t0);
+  func_def_.EnterScope();
 
-  PrintOneLine(code_stream_, "struct csi_session *sess = csi_alloc_session();");
+  func_def_.OneLine("struct csinn_session *sess = csinn_alloc_session();");
   SessionRunMode();
   ModelBinarySave();
   t0 << "sess->base_api = " << target_name_ << ";";
-  PrintOneLine(code_stream_, t0);
+  func_def_.OneLine(t0);
   t0 << "sess->base_dtype = " << base_dtype_ << ";";
-  PrintOneLine(code_stream_, t0);
+  func_def_.OneLine(t0);
   if (debug_level_ == "INFO") {
-    PrintOneLine(code_stream_, "sess->debug_level = CSI_DEBUG_LEVEL_INFO;");
+    func_def_.OneLine("sess->debug_level = CSINN_DEBUG_LEVEL_INFO;");
   }
-  PrintOneLine(code_stream_, "csi_session_init(sess);");
+  func_def_.OneLine("csinn_session_init(sess);");
 
-  t0 << "csi_set_input_number(" << ext_func_args_.size() << ", sess);";
-  PrintOneLine(code_stream_, t0);
-  t0 << "csi_set_output_number(" << output_list_.size() << ", sess);";
-  PrintOneLine(code_stream_, t0);
-  // Function body
-  PrintNewLine(code_stream_);
-  for (auto decl : buf_decl_) {
-    PrintOneLine(code_stream_, decl);
-  }
-  PrintNewLine(code_stream_);
+  t0 << "csinn_set_input_number(" << ext_func_args_.size() << ", sess);";
+  func_def_.OneLine(t0);
+  t0 << "csinn_set_output_number(" << output_list_.size() << ", sess);";
+  func_def_.OneLine(t0);
+
+  func_def_.NewLine();
   for (uint32_t i = 0; i < ext_func_args_.size(); i++) {
-    std::string new_name = CodegenCSINN::replace(ext_func_args_[i]->name_hint());
-    auto iter = io_nodes.find(new_name);
-    if (iter == io_nodes.end()) {
-      CHECK(0);
-    }
-    QuantParams q_params = iter->second;
-    string in_name = q_params.name;
+    std::string in_name = CodegenCSINN::replace(ext_func_args_[i]->name_hint());
     std::ostringstream t1;
-    t1 << in_name << "->mtype = " << GetCSINNMemoryType(input_memory_type[i]) << ";\n";
-    PrintIndents(t1);
-    t1 << "csi_set_tensor_entry(" << in_name << ", sess);\n";
-    PrintIndents(t1);
-    t1 << "csi_set_input(" << i << ", " << in_name << ", sess);";
-    PrintOneLine(code_stream_, t1);
+    t1 << in_name << "->mtype = " << GetCSINNMemoryType(input_memory_type[i]);
+    func_def_.PushDecl(t1);
+    t1 << "csinn_set_tensor_entry(" << in_name << ", sess)";
+    func_def_.PushDecl(t1);
+    t1 << "csinn_set_input(" << i << ", " << in_name << ", sess)";
+    func_def_.PushDecl(t1);
   }
 
-  PrintNewLine(code_stream_);
-  for (auto stmt : ext_func_body) {
-    PrintOneLine(code_stream_, stmt);
-  }
+  func_def_.BufToCode();
 
   int output_index = 0;
   // emit normal outputs
   for (uint32_t i = 0; i < output_list_.size(); i++) {
     if (!output_list_[i].is_const) {
       string output_name = output_list_[i].name;
-      t0 << "csi_set_output(" << output_index++ << ", " << output_name << ", sess);";
-      PrintOneLine(code_stream_, t0);
+      t0 << "csinn_set_output(" << output_index++ << ", " << output_name << ", sess);";
+      func_def_.OneLine(t0);
     }
   }
 
@@ -211,13 +196,13 @@ void CodegenLight::EmitSessionSetup(void) {
     if (output_list_[i].is_const) {
       t0 << output_list_[i].name << "->name = "
          << "\"" << output_list_[i].name << "\";";
-      PrintOneLine(code_stream_, t0);
+      func_def_.OneLine(t0);
       t0 << output_list_[i].name << "->dtype = CSINN_DTYPE_FLOAT32;";
-      PrintOneLine(code_stream_, t0);
+      func_def_.OneLine(t0);
       t0 << output_list_[i].name << "->is_const = 1;";
-      PrintOneLine(code_stream_, t0);
-      t0 << "csi_set_output(" << output_index++ << ", " << output_list_[i].name << ", sess);";
-      PrintOneLine(code_stream_, t0);
+      func_def_.OneLine(t0);
+      t0 << "csinn_set_output(" << output_index++ << ", " << output_list_[i].name << ", sess);";
+      func_def_.OneLine(t0);
     }
   }
 
@@ -228,15 +213,15 @@ void CodegenLight::EmitSessionSetup(void) {
   double fix_height = opt_cfg->light_input_fix_height;
   double fix_width = opt_cfg->light_input_fix_width;
   if (fix_height != 0) {
-    t0 << "csi_pnna_set_input_strides(sess, 1, " << fix_height << " ," << fix_width << ");";
-    PrintOneLine(code_stream_, t0);
+    t0 << "shl_pnna_set_input_strides(sess, 1, " << fix_height << " ," << fix_width << ");";
+    func_def_.OneLine(t0);
   }
 
-  PrintNewLine(code_stream_);
-  PrintOneLine(code_stream_, "csi_session_setup(sess);");
-  PrintOneLine(code_stream_, "return sess;");
-  ExitScope();
-  PrintOneLine(code_stream_, "}");
+  func_def_.NewLine();
+  func_def_.OneLine("csinn_session_setup(sess);");
+  func_def_.OneLine("return sess;");
+  func_def_.ExitScope();
+  func_def_.OneLine("}");
 }
 
 void CodegenLight::GetSymScale(float min_value, float max_value, int bits, Qinfo* qinfo) {
@@ -252,104 +237,96 @@ void CodegenLight::GetSymScale(float min_value, float max_value, int bits, Qinfo
 }
 
 void CodegenLight::EmitJitWrapper() {
-  PrintNewLine(code_stream_);
+  func_def_.NewLine();
   std::ostringstream t0;
   string in_dtype = cfg->dtype_input;
   string weight_dtype = cfg->dtype_weight;
-  PrintNewLine(code_stream_);
+  func_def_.NewLine();
   t0 << "int csinn_runtime_wrapper_(";
   t0 << "int64_t* arg_value, ";
   t0 << "int64_t* arg_type, ";
   t0 << "int64_t* arg_size, ";
   t0 << "int64_t* ret_vale, int64_t* ret_type_code) {";
-  PrintOneLine(code_stream_, t0);
+  func_def_.OneLine(t0);
 
-  EnterScope();
-  PrintOneLine(code_stream_, "char *params_base = (char *)arg_value[2];");
+  func_def_.EnterScope();
+  func_def_.OneLine("char *params_base = (char *)arg_value[2];");
 
   t0 << ext_func_id_ << "_(params_base);\n";
 
-  PrintOneLine(code_stream_, t0);
-  PrintOneLine(code_stream_, "return 0;");
-  ExitScope();
-  PrintOneLine(code_stream_, "}");
+  func_def_.OneLine(t0);
+  func_def_.OneLine("return 0;");
+  func_def_.ExitScope();
+  func_def_.OneLine("}");
 }
 
 void CodegenLight::EmitNBGSetup(void) {
-  std::ostringstream t0;
-  std::vector<string> nbg_func_;
-  int output_index = 0;
   for (uint i = 0; i < output_list_.size(); i++) {
     if (!output_list_[i].is_const) {
       string output_name = output_list_[i].name;
-      auto iter = io_nodes.find(output_name);
-      if (iter == io_nodes.end()) {
-        CHECK(0);
-      }
-      QuantParams q_params = iter->second;
-      std::ostringstream t0;
-      t0 << "csi_set_tensor_entry(" << output_name << ", sess);";
-      nbg_func_.push_back(t0.str());
-      t0.str("");
-      t0 << "csi_set_output(" << output_index++ << ", " << output_name << ", sess);";
-      nbg_func_.push_back(t0.str());
+      CSINNTensor* output_tensor = bm_graph.get_tensor(output_name);
+      output_tensor->tensor->name = const_cast<char*>(output_name.c_str());
+      bm_graph.set_output(output_tensor);
     }
   }
   for (uint i = 0; i < ext_func_args_.size(); i++) {
     std::string new_name = CodegenCSINN::replace(ext_func_args_[i]->name_hint());
-    auto iter = io_nodes.find(new_name);
-    QuantParams q_params = iter->second;
-    string in_name = q_params.name;
-    std::ostringstream t0;
-    t0 << in_name << "->mtype = " << GetCSINNMemoryType(input_memory_type[i]) << ";";
-    nbg_func_.push_back(t0.str());
-    t0.str("");
-    t0 << "csi_set_tensor_entry(" << in_name << ", sess);";
-    nbg_func_.push_back(t0.str());
-
-    t0.str("");
-    t0 << "csi_set_input(" << i << ", " << in_name << ", sess);";
-    nbg_func_.push_back(t0.str());
+    CSINNTensor* input_tensor = bm_graph.get_tensor(new_name);
+    input_tensor->tensor->name = const_cast<char*>(new_name.c_str());
+    bm_graph.set_input(input_tensor);
   }
-  // codegen for binary graph function
-  PrintNewLine(code_stream_);
-  t0 << "void *csinn_nbg(char *path) {";
-  PrintOneLine(code_stream_, t0);
-  EnterScope();
+  string q_scheme = cfg->quantization_scheme;
+  if (q_scheme == "CSINN_QUANT_INT8_ASYM_W_SYM" || q_scheme == "CSINN_QUANT_INT8_ORIGINAL") {
+    q_scheme = "CSINN_QUANT_INT8_ASYM";
+  }
+  bm_graph.sess->base_quant_type = CSINNTensorQuantStringToEnum(q_scheme);
 
-  // function body
-  PrintOneLine(code_stream_, "struct csi_session *sess = csi_alloc_session();");
-  ModelBinarySave();
-  t0 << "sess->base_api = " << target_name_ << ";";
-  PrintOneLine(code_stream_, t0);
-  t0 << "sess->base_dtype = " << base_dtype_ << ";";
-  PrintOneLine(code_stream_, t0);
+  bm_graph.sess->base_api = CSINN_LIGHT;
+  bm_graph.sess->base_dtype = CSINNTensorDtypeStringToEnum(base_dtype_);
+
   if (debug_level_ == "INFO") {
-    PrintOneLine(code_stream_, "sess->debug_level = CSI_DEBUG_LEVEL_INFO;");
-  }
-  PrintOneLine(code_stream_, "csi_session_init(sess);");
-
-  t0 << "csi_set_input_number(" << ext_func_args_.size() << ", sess);";
-  PrintOneLine(code_stream_, t0);
-  t0 << "csi_set_output_number(" << output_index << ", sess);";
-  PrintOneLine(code_stream_, t0);
-
-  PrintNewLine(code_stream_);
-  std::map<string, QuantParams>::iterator iter;
-  for (iter = io_nodes.begin(); iter != io_nodes.end(); iter++) {
-    CreateGraphTensor(iter->second);
+    bm_graph.sess->debug_level = CSINN_DEBUG_LEVEL_INFO;
   }
 
-  for (auto decl : nbg_func_) {
-    PrintOneLine(code_stream_, decl);
+  auto ctx = transform::PassContext::Current();
+  auto opt = ctx->GetConfig<CSINNConfig>("relay.ext.csinn.options");
+  auto opt_cfg = opt.value();
+
+  double fix_height = opt_cfg->light_input_fix_height;
+  double fix_width = opt_cfg->light_input_fix_width;
+  if (fix_height != 0) {
+    /* rewrite csinn_import_binary_model to replace weak define in SHL */
+    std::ostringstream t0;
+    func_def_.NewLine();
+    t0 << "struct csinn_session *csinn_import_binary_model(char *bm_addr) {";
+    func_def_.OneLine(t0);
+    func_def_.EnterScope();
+
+    t0 << "struct shl_binary_model_section_info *sinfo = "
+       << "(struct shl_binary_model_section_info *)(bm_addr + 4096);";
+    func_def_.OneLine(t0);
+    t0 << "struct csinn_session *bm_sess = "
+       << "(struct csinn_session *)(bm_addr + sinfo->sections->info_offset * 4096);";
+    func_def_.OneLine(t0);
+    t0 << "struct csinn_session *sess = csinn_alloc_session();";
+    func_def_.OneLine(t0);
+    t0 << "shl_bm_session_load(sess, bm_sess);";
+    func_def_.OneLine(t0);
+    t0 << "sess->model.bm_addr = bm_addr + sinfo->sections->graph_offset * 4096;";
+    func_def_.OneLine(t0);
+    t0 << "sess->model.bm_size = sinfo->sections->graph_size;";
+    func_def_.OneLine(t0);
+
+    t0 << "shl_pnna_set_input_strides(sess, 1, " << fix_height << " ," << fix_width << ");";
+    func_def_.OneLine(t0);
+
+    t0 << "csinn_load_binary_model(sess);";
+    func_def_.OneLine(t0);
+    t0 << "return sess;";
+    func_def_.OneLine(t0);
+    func_def_.ExitScope();
+    func_def_.OneLine("}");
   }
-
-  t0 << "csi_load_binary_model(path, sess);";
-  PrintOneLine(code_stream_, t0);
-  PrintOneLine(code_stream_, "return sess;");
-
-  ExitScope();
-  PrintOneLine(code_stream_, "}");
 }
 
 string CodegenLight::EmitGraph(void) {
@@ -363,19 +340,27 @@ string CodegenLight::EmitGraph(void) {
     EmitNBGSetup();
   }
   DumpConstant();
-  return code_stream_.str();
+  DumpGraphInfo();
+  return func_def_.str();
 }
 
 void CodegenLight::ModelBinarySave() {
   std::ostringstream t0;
-  t0 << "sess->model_name = \"csi.mbs.bin\";";
-  PrintOneLine(code_stream_, t0);
-  t0 << "sess->base_quant_type = " << cfg->quantization_scheme << ";";
-  PrintOneLine(code_stream_, t0);
+  std::string quantization_scheme = cfg->quantization_scheme == "CSINN_QUANT_INT8_ASYM_W_SYM"
+                                        ? "CSINN_QUANT_INT8_ASYM"
+                                        : cfg->quantization_scheme;
+  t0 << "sess->base_quant_type = " << quantization_scheme << ";";
+  func_def_.OneLine(t0);
   if (model_save == "save_only") {
-    t0 << "sess->model_save = CSINN_SAVE_ONLY;";
-    PrintOneLine(code_stream_, t0);
+    t0 << "sess->model.save_mode = CSINN_SAVE_ONLY;";
+    func_def_.OneLine(t0);
   }
+  if (model_priority >= 0 && model_priority <= 2) {
+    t0 << "sess->model.priority = " << to_string(model_priority) << ";";
+  } else {
+    std::cerr << "light unsupported priority " << to_string(model_priority) << "\n";
+  }
+  func_def_.OneLine(t0);
 }
 
 }  // namespace contrib

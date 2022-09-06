@@ -30,7 +30,6 @@ import numpy as np
 import tvm
 from tvm import runtime
 from tvm.contrib import graph_executor
-from tvm.contrib import hhb_runtime
 
 from core.frontend_manage import import_model
 from core.common import hhb_register_parse, print_top5, HHBException, ensure_dir, AttributeDict
@@ -43,6 +42,7 @@ from core.arguments_manage import (
     add_import_argument,
     add_optimize_argument,
     add_quantize_argument,
+    add_hardware_argument,
     add_codegen_argument,
     ArgumentFilter,
 )
@@ -57,7 +57,7 @@ from core.hhbir_manage import (
 from core.quantization_manage import (
     collect_quantization_config,
     set_quantize_params_by_board,
-    get_quantize_config,
+    get_config_dict,
 )
 from core.preprocess_manage import (
     collect_preprocess_config,
@@ -95,6 +95,7 @@ def add_benchmark_parser(subparsers):
 
     add_import_argument(parser)
     add_quantize_argument(parser)
+    add_hardware_argument(parser)
     add_simulate_argument(parser)
     add_preprocess_argument(parser)
     add_postprocess_argument(parser)
@@ -144,6 +145,7 @@ def driver_benchmark(args_filter: ArgumentFilter):
     args_filter.filter_argument(all_filters, extra=extra_args)
     args = args_filter.filtered_args
 
+    config_dict = get_config_dict(args)
     if not args.no_quantize:
         dataset_list = []
         if args.calibrate_dataset:
@@ -155,9 +157,8 @@ def driver_benchmark(args_filter: ArgumentFilter):
             for d in dataset:
                 dataset_list.append(d)
 
-        qconfig = get_quantize_config(args.quantize_config)
         qnn_ir = HHBQNNIR()
-        qnn_ir.convert((mod, params), qconfig, dataset_list)
+        qnn_ir.convert((mod, params), config_dict, dataset_list)
 
     if args.board == "x86_ref":
         if args.no_quantize:
@@ -165,7 +166,6 @@ def driver_benchmark(args_filter: ArgumentFilter):
             x86_codegen_ir.convert((mod, params), args.board, args.opt_level)
         else:
             x86_codegen_ir = HHBX86QnnCodegenIR()
-            config_dict = get_quantize_config(args.quantize_config)
             x86_codegen_ir.convert(
                 qnn_ir.get_model(), args.board, args.opt_level, args.output, config_dict
             )
@@ -176,10 +176,10 @@ def driver_benchmark(args_filter: ArgumentFilter):
     if args.no_quantize:
         m = graph_executor.GraphModule(x86_codegen_ir.get_model()["default"](ctx))
     else:
-        m = hhb_runtime.create(
-            x86_codegen_ir.get_model(), qnn_ir.get_model()[0], ctx, output_dir=args.output
-        )
-        m.set_params(os.path.join(args.output, x86_codegen_ir.params_name))
+        factory = x86_codegen_ir.get_factory()
+        lib = x86_codegen_ir.get_lib(args.output)
+        m = tvm.contrib.graph_executor.create(factory.get_graph_json(), lib, tvm.cpu(0))
+        m.load_params(tvm.runtime.save_param_dict(factory.get_params()))
     dl = DatasetLoader(
         args.simulate_data,
         args.preprocess_config,

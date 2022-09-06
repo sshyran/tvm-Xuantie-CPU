@@ -20,12 +20,14 @@
 import logging
 import numpy as np
 from tvm import relay
+from tvm.ir.tensor_type import TensorType
 from ..op.strategy.generic import is_depthwise_conv2d
-from ..frontend.common import infer_shape
+from ..frontend.common import infer_shape as infer_call
 from ..expr_functor import ExprMutator
 from ..expr import Var, Call, TupleGetItem, Constant, Tuple, const
 from .. import function
 from ..transform import function_pass
+from .. import transform as _transform
 from ._convert_to_csi import _qnn_attrs
 
 logger = logging.getLogger("HHB")
@@ -43,6 +45,8 @@ def split_relu(call, op_args):
         new_tuple_args.append(new_relu)
     concat_attr["layer_name"] = base_name + "_concat" if base_name else base_name
     new_concat = relay.qnn.op.csi_concatenate(Tuple(new_tuple_args), **concat_attr)
+    if hasattr(call, "type_args") and len(call.type_args) >= 1:
+        new_concat.__checked_type__ = TensorType(call.type_args[0].shape)
     return new_concat
 
 
@@ -64,7 +68,7 @@ def _split_q_params(q_params, num_group, group_size, left_group, keep_input=True
     return out
 
 
-def split_group(in_data, weight, bias, attr, max_groups):
+def split_group(in_data, weight, bias, attr, max_groups, out_shape=None):
     assert attr["data_layout"] == "NCHW", Exception("Only support NCHW layout.")
 
     if max_groups >= attr["groups"]:
@@ -145,7 +149,10 @@ def split_group(in_data, weight, bias, attr, max_groups):
     logger.debug("splitted conv %s %s by parmas: %s", base_name, in_shape, split_params)
     concat_name = base_name + "_concat" if base_name else base_name
     concat_q_params = out_q_params + [output_q]
-    return relay.qnn.op.csi_concatenate(concat_tuple, 1, concat_q_params, concat_name)
+    ret = relay.qnn.op.csi_concatenate(concat_tuple, 1, concat_q_params, concat_name)
+    if out_shape:
+        ret.__checked_type__ = TensorType(out_shape)
+    return ret
 
 
 class MaxGroupSpliter(ExprMutator):
@@ -168,7 +175,9 @@ class MaxGroupSpliter(ExprMutator):
             in_data = op_args[0]
             weight = op_args[1].data.asnumpy()
             bias = op_args[2].data.asnumpy()
-            new_call = split_group(in_data, weight, bias, conv_attrs, self.max_groups)
+            out_shape = call.checked_type.shape
+            new_call = split_group(in_data, weight, bias, conv_attrs, self.max_groups, out_shape)
+            new_call.__checked_type__ = call.checked_type
             return new_call
 
         if call.op.name == "qnn.csi.relu":
@@ -176,6 +185,7 @@ class MaxGroupSpliter(ExprMutator):
                 return split_relu(call, op_args)
 
         new_call = Call(call.op, op_args, call.attrs)
+        new_call.__checked_type__ = call.checked_type
         return new_call
 
     def visit_function(self, fn):
@@ -184,7 +194,7 @@ class MaxGroupSpliter(ExprMutator):
         return function.Function(list(new_params), new_body)
 
 
-def split_channel(in_data, weight, bias, attr, max_out_channel):
+def split_channel(in_data, weight, bias, attr, max_out_channel, out_shape=None):
     """Split output channel by threshold"""
     assert attr["data_layout"] == "NCHW", Exception("Only support NCHW layout.")
 
@@ -237,7 +247,10 @@ def split_channel(in_data, weight, bias, attr, max_out_channel):
     logger.debug("splitted conv %s %s by params: %s", base_name, infer_shape(in_data), split_params)
     concat_name = base_name + "_concat" if base_name else base_name
     concat_q_params = out_q_params + [output_q]
-    return relay.qnn.op.csi_concatenate(concat_tuple, 1, concat_q_params, concat_name)
+    ret = relay.qnn.op.csi_concatenate(concat_tuple, 1, concat_q_params, concat_name)
+    if out_shape:
+        ret.__checked_type__ = TensorType(out_shape)
+    return ret
 
 
 class OutChannelSpliter(ExprMutator):
@@ -258,7 +271,10 @@ class OutChannelSpliter(ExprMutator):
             if conv_attrs["groups"] != 1 or weight.shape[0] <= self.max_out_channel:
                 return Call(call.op, op_args, call.attrs)
             # for common convolution
-            new_call = split_channel(in_data, weight, bias, conv_attrs, self.max_out_channel)
+            out_shape = infer_shape(call)
+            new_call = split_channel(
+                in_data, weight, bias, conv_attrs, self.max_out_channel, out_shape
+            )
             return new_call
 
         if call.op.name == "qnn.csi.relu":
@@ -325,8 +341,8 @@ class KernelSizeSpliter(ExprMutator):
         return function.Function(list(new_params), new_body)
 
 
-def _infer_shape(in_shape, w_shape, padding, dilation, strides, group=1):
-    oshape = [in_shape[0], w_shape[0] // group, 0, 0]
+def _infer_shape(in_shape, w_shape, padding, dilation, strides):
+    oshape = [in_shape[0], w_shape[0], 0, 0]
     pad_top, pad_left, pad_down, pad_right = padding
     dilated_ksize_y = 1 + (w_shape[2] - 1) * dilation[0]
     dilated_ksize_x = 1 + (w_shape[3] - 1) * dilation[1]
@@ -345,6 +361,19 @@ def _infer_shape(in_shape, w_shape, padding, dilation, strides, group=1):
     return oshape
 
 
+def infer_shape(in_expr):
+    if isinstance(in_expr, Var):
+        if in_expr._checked_type_ is not None:
+            return [x.value for x in in_expr._checked_type_.shape]
+    if hasattr(in_expr, "__checked_type__") and in_expr.__checked_type__ is not None:
+        return [x.value for x in in_expr.__checked_type__.shape]
+
+    shape = infer_call(in_expr)
+    in_expr.__checked_type__ = TensorType(shape)
+
+    return shape
+
+
 def get_max_row(
     sram_size,
     in_shape,
@@ -353,14 +382,15 @@ def get_max_row(
     dilation,
     strides,
     contain_weight,
+    input_byte,
     activation_byte,
     weight_byte,
+    org_row,
 ):
     max_row = w_shape[2]
     while True:
-        max_row += 1
         s_in_shape = [in_shape[0], in_shape[1], max_row, in_shape[3]]
-        s_in_size = np.prod(s_in_shape) * activation_byte
+        s_in_size = np.prod(s_in_shape) * input_byte
 
         s_out_shape = _infer_shape(s_in_shape, w_shape, s_padding, dilation, strides)
         s_out_size = np.prod(s_out_shape) * activation_byte
@@ -371,9 +401,12 @@ def get_max_row(
 
         if left_size < 0:
             max_row -= 1
-            if max_row <= 0:
-                raise Exception("value error!")
+            if max_row < w_shape[2]:
+                raise Exception("max_row smaller than w_h!")
             return max_row
+        if max_row >= org_row:
+            return max_row
+        max_row += 1
 
 
 def get_end(orig_end, end_list):
@@ -414,9 +447,8 @@ def split_input_by_max_row(
     padding = attrs["padding"]
     strides = attrs["strides"]
     dilation = attrs["dilation"]
-    groups = attrs["groups"]
 
-    _, _, o_h, _ = _infer_shape(in_shape, w_shape, padding, dilation, strides, groups)
+    o_n, o_c, o_h, o_w = _infer_shape(in_shape, w_shape, padding, dilation, strides)
 
     # compute [start, end] number for each row grid
     start_list = [-padding[0] + i * strides[1] for i in range(o_h)]
@@ -449,43 +481,46 @@ def split_input_by_max_row(
     logger.debug("original conv shape: input=%s s_w_shape=%s", infer_shape(in_data), weight.shape)
     split_params = []
     for i, (start_row, end_row) in enumerate(row_index):
-        # np.mgrid can get every element
-        # indices = np.mgrid[0:in_shape[0], 0:in_shape[1], s:e+1]
-        # s_input = relay.gather_nd(data, indices_expr)
-        # take can get all elements along axis by set start and end
-        # if i == len(row_index) - 1:
-        #     if end_row != d_h -1 and d_h - start_row <= max_row:
-        #         end_row = d_h -1
         indices = list(range(start_row, end_row + 1))
-        indices_expr = const(indices)
-        index_params = [attrs["q_params"][0]] * 3
-        index_name = base_name + f"_take_{i}"
-        out_dtype = attrs.get("output_dtype", "float32")
-        s_input = relay.qnn.op.csi_take(
-            in_data,
-            indices_expr,
-            axis=2,
-            out_dtype=out_dtype,
-            q_params=index_params,
-            mode="clip",
-            layer_name=index_name,
-        )
-        s_padding = [0, padding[1], 0, padding[3]]
-        if start_row == 0:
-            s_padding[0] = padding[0]
-        if end_row == d_h - 1:
-            s_padding[2] = padding[2]
+        if start_row == 0 and end_row + 1 == d_h:
+            s_input = in_data
+        else:
+            indices_expr = const(indices)
+            index_params = [attrs["q_params"][0]] * 3
+            index_name = base_name + f"_take_{i}"
+            out_dtype = attrs.get("output_dtype", "float32")
+            s_input = relay.qnn.op.csi_take(
+                in_data,
+                indices_expr,
+                axis=2,
+                out_dtype=out_dtype,
+                q_params=index_params,
+                mode="clip",
+                layer_name=index_name,
+            )
+            s_padding = [0, padding[1], 0, padding[3]]
+            if start_row == 0:
+                s_padding[0] = padding[0]
+            if end_row == d_h - 1:
+                s_padding[2] = padding[2]
 
-        s_conv_name = base_name + f"_{i}"
-        attrs["padding"] = s_padding
-        attrs["layer_name"] = s_conv_name
-        attrs["groups"] = base_group
+            s_conv_name = base_name + f"_{i}"
+            attrs["padding"] = s_padding
+            attrs["layer_name"] = s_conv_name
+            attrs["groups"] = base_group
+
         if max_out_channel:
             if base_group > 1:
                 raise Exception("Unsupport split group conv by out channel")
+            if max_out_channel >= w_shape[0] and logging.DEBUG >= logger.getEffectiveLevel():
+                s_inshape = infer_shape(s_input)
+                split_params.append({"in_shape": s_inshape, "w_shape": weight.shape})
             s_conv = split_channel(s_input, weight, bias, attrs, max_out_channel)
         elif max_groups:
             s_conv = split_group(s_input, weight, bias, attrs, max_groups)
+            if max_groups >= attrs["groups"] and logging.DEBUG >= logger.getEffectiveLevel():
+                s_inshape = infer_shape(s_input)
+                split_params.append({"in_shape": s_inshape, "w_shape": weight.shape})
         else:
             if logging.DEBUG >= logger.getEffectiveLevel():
                 s_inshape = infer_shape(s_input)
@@ -493,17 +528,27 @@ def split_input_by_max_row(
             s_conv = relay.qnn.op.csi_conv2d(s_input, const(weight), const(bias), **attrs)
 
         concat_tuple.append(s_conv)
-
-    logger.debug("splitted conv %s %s by parmas: %s", base_name, in_shape, split_params)
+    if split_params:
+        logger.debug("splitted conv %s %s by parmas: %s", base_name, in_shape, split_params)
     if len(concat_tuple) == 1:
         return s_conv
     q_params = [attrs["q_params"][-1]] * (len(concat_tuple) + 1)
     concat_name = base_name + "_concat" if base_name else base_name
-    return relay.qnn.op.csi_concatenate(concat_tuple, 2, q_params, concat_name)
+    ret = relay.qnn.op.csi_concatenate(concat_tuple, 2, q_params, concat_name)
+    ret.__checked_type__ = TensorType([o_n, o_c, o_h, o_w])
+    return ret
 
 
 def split_depthwise_conv2d_input(
-    in_data, weight, bias, attrs, sram_size, contain_weight, activation_byte, weight_byte
+    in_data,
+    weight,
+    bias,
+    attrs,
+    sram_size,
+    contain_weight,
+    input_byte,
+    activation_byte,
+    weight_byte,
 ):
     padding = attrs["padding"]
     strides = attrs["strides"]
@@ -516,7 +561,7 @@ def split_depthwise_conv2d_input(
     k_w = w_shape[3]
 
     s_in_shape = [in_shape[0], in_shape[1], k_h, d_w]
-    s_in_size = np.prod(s_in_shape) * activation_byte
+    s_in_size = np.prod(s_in_shape) * input_byte
     # top left down right
     s_padding = [padding[0], padding[1], 0, padding[3]]
 
@@ -538,14 +583,16 @@ def split_depthwise_conv2d_input(
             dilation,
             strides,
             contain_weight,
+            input_byte,
             activation_byte,
             weight_byte,
+            in_shape[2],
         )
         return split_input_by_max_row(in_data, in_shape, weight, bias, attrs, max_row)
 
     # try to split group
     s_in_shape = [in_shape[0], 1, k_h, d_w]
-    s_in_size = np.prod(s_in_shape) * activation_byte
+    s_in_size = np.prod(s_in_shape) * input_byte
     s_w_shape = [1, w_shape[1], k_h, k_w]
     s_out_shape = _infer_shape(s_in_shape, s_w_shape, s_padding, dilation, strides)
     s_out_size = np.prod(s_out_shape) * activation_byte
@@ -565,8 +612,10 @@ def split_depthwise_conv2d_input(
             dilation,
             strides,
             contain_weight,
+            input_byte,
             activation_byte,
             weight_byte,
+            in_shape[2],
         )
 
         return split_input_by_max_row(in_data, in_shape, weight, bias, attrs, max_row, max_groups=1)
@@ -576,9 +625,18 @@ def split_depthwise_conv2d_input(
 
 
 def split_common_conv2d_input(
-    in_data, weight, bias, attrs, sram_size, contain_weight, activation_byte, weight_byte
+    in_data,
+    weight,
+    bias,
+    attrs,
+    sram_size,
+    contain_weight,
+    input_byte,
+    activation_byte,
+    weight_byte,
+    align,
 ):
-    w_shape = weight.shape
+    w_shape = list(weight.shape)
     in_shape = infer_shape(in_data)
     d_w = in_shape[3]
     k_h = w_shape[2]
@@ -592,11 +650,13 @@ def split_common_conv2d_input(
     # if s_out_size smaller than sram size, it needn't split column.
     # top left down right
     s_padding = [padding[0], padding[1], 0, padding[3]]
-
+    cof = int(w_shape[0] / align)
+    cof = 1 if cof == 0 else cof
+    w_shape[0] = align * cof if align > 1 else w_shape[0]
     s_in_shape = [in_shape[0], in_shape[1], k_h, d_w]
     s_out_shape = _infer_shape(s_in_shape, w_shape, s_padding, dilation, strides)
     s_out_size = np.prod(s_out_shape) * activation_byte
-    s_in_size = np.prod(s_in_shape) * activation_byte
+    s_in_size = np.prod(s_in_shape) * input_byte
 
     left_size = sram_size - (s_in_size + s_out_size)
     if contain_weight:
@@ -613,10 +673,12 @@ def split_common_conv2d_input(
             dilation,
             strides,
             contain_weight,
+            input_byte,
             activation_byte,
             weight_byte,
+            in_shape[2],
         )
-        return split_input_by_max_row(in_data, in_shape, weight, bias, attrs, max_row)
+        return split_input_by_max_row(in_data, in_shape, weight, bias, attrs, max_row, w_shape[0])
 
     # try to split out channel
     s_w_shape = [1, w_shape[1], k_h, k_w]
@@ -627,9 +689,12 @@ def split_common_conv2d_input(
     if contain_weight:
         s_k_size = np.prod(s_w_shape) * weight_byte
         left_size -= s_k_size
+        max_out_channel = np.floor_divide(sram_size - s_in_size, (s_out_size + s_k_size))
+    else:
+        max_out_channel = np.floor_divide(sram_size - s_in_size, s_out_size)
 
-    if left_size >= 0:
-        # meet the needs of split out channel
+    if max_out_channel > 0:
+        s_w_shape[0] = align if align > 1 else max_out_channel
         max_row = get_max_row(
             sram_size,
             s_in_shape,
@@ -638,18 +703,48 @@ def split_common_conv2d_input(
             dilation,
             strides,
             contain_weight,
+            input_byte,
             activation_byte,
             weight_byte,
+            in_shape[2],
         )
+        cof = int(max_out_channel / align)
+        if cof > 0:
+            max_out_channel = align * cof if align > 1 else max_out_channel
+            if max_row == in_shape[2]:
+                max_out_channel = align
+                s_in_shape = in_shape
+                for i in range(2, cof + 1):
+                    s_w_shape[0] = align * i
+                    s_out_shape = _infer_shape(s_in_shape, s_w_shape, s_padding, dilation, strides)
+                    s_in_size = np.prod(s_in_shape) * input_byte
+                    s_out_size = np.prod(s_out_shape) * activation_byte
+                    s_k_size = np.prod(s_w_shape) * weight_byte if contain_weight else 0
+                    left_size = sram_size - s_in_size - s_out_size - s_k_size
+                    if left_size > 0:
+                        max_out_channel = s_w_shape[0]
+                    else:
+                        break
+        else:
+            raise Exception("Sram size is too small to align out shape.")
 
         return split_input_by_max_row(
-            in_data, in_shape, weight, bias, attrs, max_row, max_out_channel=1
+            in_data, in_shape, weight, bias, attrs, max_row, max_out_channel
         )
+
     raise Exception("Sram size is too small to split row. hhb unsupported column splitting now.")
 
 
 def split_group_conv2d_input(
-    in_data, weight, bias, attrs, sram_size, contain_weight, activation_byte, weight_byte
+    in_data,
+    weight,
+    bias,
+    attrs,
+    sram_size,
+    contain_weight,
+    input_byte,
+    activation_byte,
+    weight_byte,
 ):
     w_shape = weight.shape
     in_shape = infer_shape(in_data)
@@ -666,10 +761,10 @@ def split_group_conv2d_input(
     # top left down right
     s_padding = [padding[0], padding[1], 0, padding[3]]
     s_in_shape = [in_shape[0], in_shape[1], k_h, d_w]
-    s_out_shape = _infer_shape(s_in_shape, w_shape, s_padding, dilation, strides, group=1)
+    s_out_shape = _infer_shape(s_in_shape, w_shape, s_padding, dilation, strides)
 
     s_out_size = np.prod(s_out_shape) * activation_byte
-    s_in_size = np.prod(s_in_shape) * activation_byte
+    s_in_size = np.prod(s_in_shape) * input_byte
 
     left_size = sram_size - (s_in_size + s_out_size)
     if contain_weight:
@@ -686,8 +781,10 @@ def split_group_conv2d_input(
             dilation,
             strides,
             contain_weight,
+            input_byte,
             activation_byte,
             weight_byte,
+            in_shape[2],
         )
         return split_input_by_max_row(in_data, in_shape, weight, bias, attrs, max_row)
 
@@ -714,8 +811,10 @@ def split_group_conv2d_input(
             dilation,
             strides,
             contain_weight,
+            input_byte,
             activation_byte,
             weight_byte,
+            in_shape[2],
         )
 
         return split_input_by_max_row(in_data, in_shape, weight, bias, attrs, max_row, 1)
@@ -730,8 +829,10 @@ class SramSizeSpliter(ExprMutator):
         self.config = config
         self.sram_size = config.h_sram_size
         self.contain_weight = config.h_contain_weight
+        self.input_byte = config.nbit_input // 8
         self.activation_byte = config.nbit_input // 8
         self.weight_byte = config.nbit_weight // 8
+        self.align = config.h_align
 
     def visit_call(self, call):
         op_args = [self.visit(arg) for arg in call.args]
@@ -739,8 +840,11 @@ class SramSizeSpliter(ExprMutator):
             in_data = op_args[0]
             conv_attrs = _qnn_attrs(call.attrs)
             in_shape = infer_shape(in_data)
-            o_shape = infer_shape(call)
             w_shape = op_args[1].data.asnumpy().shape
+            padding = conv_attrs["padding"]
+            dilation = conv_attrs["dilation"]
+            strides = conv_attrs["strides"]
+            o_shape = _infer_shape(in_shape, w_shape, padding, dilation, strides)
 
             in_size = np.prod(in_shape) * self.activation_byte
             out_size = np.prod(o_shape) * self.activation_byte
@@ -751,7 +855,7 @@ class SramSizeSpliter(ExprMutator):
                 total_size += w_size
 
             # needn't split
-            if total_size <= self.sram_size:
+            if total_size <= self.sram_size and self.align == 1:
                 return Call(call.op, op_args, call.attrs)
 
             weight = op_args[1].data.asnumpy()
@@ -761,31 +865,47 @@ class SramSizeSpliter(ExprMutator):
             )
 
             s_out_size = np.prod(o_shape[2:]) * self.activation_byte
-            s_w_size = np.prod(w_shape[2:]) * self.weight_byte
+            s_w_size = 0
+            if self.contain_weight:
+                s_w_size = np.prod(w_shape[2:]) * self.weight_byte
             # for depthwise
             if is_depthwise:
                 # NCHW
-                s_in_size = np.prod(in_shape[2:]) * self.activation_byte
+                s_in_size = np.prod(in_shape[2:]) * self.input_byte
                 max_groups = np.floor_divide(
                     self.sram_size, (s_in_size + s_out_size + s_w_size)
                 ).astype(int)
+
+                if self.align > 1:
+                    cof = int(max_groups / self.align)
+                    if cof == 0:
+                        raise Exception(f"Sram size is too small to align {self.align}.")
+                    max_groups = cof * self.align
+                    cof = int(w_shape[0] / self.align)
+                    max_groups = cof * self.align if cof > 0 else max_groups
+
                 if max_groups > 0:
                     logger.debug("split depthwise conv by max groups:%s", max_groups)
                     logger.debug(
                         "original dw conv shaps: in_shape=%s, w_shape=%s", in_shape, w_shape
                     )
-                    return split_group(in_data, weight, bias, conv_attrs, max_groups)
+                    new_call = split_group(in_data, weight, bias, conv_attrs, max_groups)
+                    new_call.__checked_type__ = call.checked_type
+                    return new_call
 
-                return split_depthwise_conv2d_input(
+                new_call = split_depthwise_conv2d_input(
                     in_data,
                     weight,
                     bias,
                     conv_attrs,
                     self.sram_size,
                     self.contain_weight,
+                    self.input_byte,
                     self.activation_byte,
                     self.weight_byte,
                 )
+                new_call.__checked_type__ = call.checked_type
+                return new_call
 
             # for group convolution
             if conv_attrs["groups"] > 1:
@@ -794,37 +914,47 @@ class SramSizeSpliter(ExprMutator):
                 s_group_size = total_size // conv_attrs["groups"]
                 if s_group_size <= self.sram_size:
                     max_groups = np.floor_divide(self.sram_size, s_group_size).astype(int)
-
+                    if self.align > 1:
+                        cof = int(max_groups / self.align)
+                        if cof == 0:
+                            raise Exception(f"Sram size is too small to align {self.align}.")
+                        max_groups = cof * self.align
                     logger.debug("split group conv by max groups:%s", max_groups)
                     logger.debug(
                         "original group conv shaps: in_shape=%s, w_shape=%s", in_shape, w_shape
                     )
-                    return split_group(in_data, weight, bias, conv_attrs, max_groups)
+                    new_call = split_group(in_data, weight, bias, conv_attrs, max_groups)
+                    new_call.__checked_type__ = call.checked_type
+                    return new_call
 
-                return split_group_conv2d_input(
+                new_call = split_group_conv2d_input(
                     in_data,
                     weight,
                     bias,
                     conv_attrs,
                     self.sram_size,
                     self.contain_weight,
+                    self.input_byte,
                     self.activation_byte,
                     self.weight_byte,
                 )
+                new_call.__checked_type__ = call.checked_type
+                return new_call
 
-            s_out_size = np.prod(o_shape[1:]) * self.activation_byte
-            s_w_size = np.prod(w_shape[1:]) * self.weight_byte
-            # for common convolution
-            max_out_channel = np.floor_divide(
-                self.sram_size - in_size, (s_out_size + s_w_size)
-            ).astype(int)
-            if max_out_channel > 0:
-
-                logger.debug("split common conv by max groups:%s", max_out_channel)
-                logger.debug(
-                    "original common conv shaps: in_shape=%s, w_shape=%s", in_shape, w_shape
-                )
-                return split_channel(in_data, weight, bias, conv_attrs, max_out_channel)
+            # s_out_size = np.prod(o_shape[1:]) * self.activation_byte
+            # s_w_size = 0
+            # if self.contain_weight:
+            #     s_w_size = np.prod(w_shape[1:]) * self.weight_byte
+            # # for common convolution
+            # max_out_channel = np.floor_divide(
+            #     self.sram_size - in_size, (s_out_size + s_w_size)
+            # ).astype(int)
+            # if max_out_channel > 0:
+            #     logger.debug("split common conv by out channel:%s", max_out_channel)
+            #     logger.debug(
+            #         "original common conv shaps: in_shape=%s, w_shape=%s", in_shape, w_shape
+            #     )
+            #     return split_channel(in_data, weight, bias, conv_attrs, max_out_channel)
 
             return split_common_conv2d_input(
                 in_data,
@@ -833,8 +963,10 @@ class SramSizeSpliter(ExprMutator):
                 conv_attrs,
                 self.sram_size,
                 self.contain_weight,
+                self.input_byte,
                 self.activation_byte,
                 self.weight_byte,
+                self.align,
             )
 
         if call.op.name == "qnn.csi.relu":
@@ -861,7 +993,6 @@ class ConvSpliter:
         self.max_out_channel = crt_config.h_max_out_channel
         self.max_kernel_size = crt_config.h_max_kernel_size
         self.sram_size = crt_config.h_sram_size
-        self.contain_weight = crt_config.h_contain_weight
         self.config = crt_config
 
     def transform_function(self, func, mod, ctx):
@@ -869,12 +1000,15 @@ class ConvSpliter:
         if self.max_groups:
             logger.debug("split by max groups: max_groups = %s", self.max_groups)
             mod["main"] = MaxGroupSpliter(self.max_groups).visit(mod["main"])
+            mod = _transform.InferType()(mod)
         if self.max_out_channel:
             logger.debug("split by out groups: max_out_channel = %s", self.max_out_channel)
             mod["main"] = OutChannelSpliter(self.max_out_channel).visit(mod["main"])
+            mod = _transform.InferType()(mod)
         if self.max_kernel_size:
             logger.debug("split by kernel size: max_kernel_size = %s", self.max_kernel_size)
             mod["main"] = KernelSizeSpliter(self.config, self.max_kernel_size).visit(mod["main"])
+            mod = _transform.InferType()(mod)
         if self.sram_size:
             logger.debug("split by sram size: max_sram_size = %s", self.sram_size)
             mod["main"] = SramSizeSpliter(self.config).visit(mod["main"])

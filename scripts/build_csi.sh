@@ -23,18 +23,14 @@ SRC_BASE=$PWD
 
 cd ../csi-nn2/
 
-#make nn2_openvx
 make nn2_ref_x86
-#make nn2_pnna_x86
-#make nn2_pnna
-#make nn2_c906
-#make nn2_c908
-#make nn2_hlight
-#make nn2_hlight_x86
-#make nn2_asp_elf
 make install_nn2
 
-cd -
+#install
+make install_nn2
+cp riscv_cpu_build/libshl_* install_nn2/lib -rf
+
+cd ../hhb
 
 cp ../csi-nn2/install_nn2 . -r
 

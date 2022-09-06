@@ -17,7 +17,7 @@
  * under the License.
  */
 
-/* auto generate by HHB_VERSION "1.12.0" */
+/* auto generate by HHB_VERSION "2.0.4" */
 
 #_hhb_header_files_#
 #include <pthread.h>
@@ -47,9 +47,30 @@ volatile float total_time = 0.f;
 volatile float total_fps = 0.f;
 volatile int loop_time = 100;
 
+void *create_graph(char *params_path) {
+    char *suffix = params_path + (strlen(params_path) - 3);
+    if (strcmp(suffix, ".nb") == 0) {
+        // create binary graph
+        return csinn_nbg(params_path, device_index);
+    }
+
+    char *params = get_binary_from_file(params_path, NULL);
+    suffix = params_path + (strlen(params_path) - 7);
+    if (strcmp(suffix, ".params") == 0) {
+        // create general graph
+        return csinn_(params, device_index);
+    }
+
+    suffix = params_path + (strlen(params_path) - 3);
+    if (strcmp(suffix, ".bm") == 0) {
+        return csinn_(params + 8192, device_index);
+    } else {
+        return NULL;
+    }
+}
+
 static void full_network(void *thread_args) {
     char **data_path = NULL;
-    char *params_path = NULL;
     int input_num = #_input_num#;
     int output_num = #_output_num#;
     int input_group_num = 1;
@@ -79,13 +100,7 @@ static void full_network(void *thread_args) {
         if (initNum == device_index) break;
     }
 
-    void *sess;
-    params_path = argv[1];
-    char *params = get_binary_from_file(params_path);
-    if (params == NULL) {
-        return;
-    }
-    #_create_graph_stats_#
+    void *sess = create_graph(argv[1]);
 
     initNum ++;
     while(1) {
@@ -105,12 +120,12 @@ static void full_network(void *thread_args) {
         printf("%d-th thread, %d-th input:\n", device_index, i);
         for (int j = 0; j < input_num; j++) {
             #_get_input_data_stats_#
-            input[j] = csi_ovx_input_f32_to_u8(j, inputf[j], sess);
+            input[j] = shl_ovx_input_f32_to_u8(j, inputf[j], sess);
         }
 
-        start_time = csi_get_timespec();
+        start_time = shl_get_timespec();
         csinn_run(#_anole_value_pass# sess);
-        end_time = csi_get_timespec();
+        end_time = shl_get_timespec();
 
         thread_total_time += (((float)(end_time - start_time)) / 1000000);
         total_time += (((float)(end_time - start_time)) / 1000000);
@@ -129,16 +144,15 @@ static void full_network(void *thread_args) {
 
     total_fps += 1000.0/(thread_total_time / input_group_num);
 
-    free(params);
-    csi_session_deinit(sess);
-    csi_free_session(sess);
+    csinn_session_deinit(sess);
+    csinn_free_session(sess);
 }
 
 int main(int argc, char **argv) {
     int i=0;
     struct thread_args targs[8];
 
-    deviceCount = csi_ovx_get_device_number();
+    deviceCount = shl_ovx_get_device_number();
     printf("deviceCount = %d\n",deviceCount);
 
     if(argc == 4 )

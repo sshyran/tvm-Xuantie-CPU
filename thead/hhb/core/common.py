@@ -40,8 +40,10 @@ logger = logging.getLogger("HHB")
 
 def hhb_version():
     """Version information"""
-    __version__ = "1.12.0"
-    __build_time__ = "20220426"
+
+    __version__ = "2.0.4"
+    __build_time__ = "20220721"
+
     return "HHB version: " + __version__ + ", build " + __build_time__
 
 
@@ -168,27 +170,23 @@ def ensure_dir(directory):
 def get_target(board):
     """Get the target info accorrding to the board type."""
     if board == "anole":
-        target = "llvm -mtriple=csky -mcpu=c860 -mfloat-abi=hard -device=anole"
+        target = "c -device=anole"
     elif board == "light":
-        target = "llvm -device=light"
+        target = "c -device=light"
     elif board == "hlight":
-        target = "llvm -device=hlight"
+        target = "c -device=hlight"
     elif board == "asp":
-        target = "llvm -device=asp"
+        target = "c -device=asp"
     elif board == "i805":
-        target = "llvm -mtriple=csky -mcpu=i805"
+        target = "c -device=i805"
     elif board == "c860":
-        target = "llvm -mtriple=csky -mcpu=c860 -mfloat-abi=hard -device=c860"
+        target = "c -device=c860"
     elif board == "c906":
-        target = "llvm -mtriple=riscv -mcpu=c906 -mfloat-abi=hard -device=c906"
+        target = "c -device=c906"
     elif board == "c908":
-        target = "llvm -mtriple=riscv -mcpu=c908 -mfloat-abi=hard -device=c908"
+        target = "c -device=c908"
     elif board == "x86_ref":
-        target = "llvm"
-    elif board == "ch8601":
-        target = "llvm -device=ch8601"
-    elif board == "dp1k":
-        target = "llvm -device=dp1k"
+        target = "c"
     return target
 
 
@@ -204,6 +202,12 @@ def print_top5(value, output_name, shape):
     value = pre[ind]
     ind = ind[::-1]
     value = value[::-1]
+    print("=== tensor info ===")
+    print(f"shape: {shape}")
+    print(f"The max_value of output: {pre.max():.6f}")
+    print(f"The min_value of output: {pre.min():.6f}")
+    print(f"The mean_value of output: {pre.mean():.6f}")
+    print(f"The var_value of output: {pre.var():.6f}")
     print(f"====== index:{output_name}, shape:{shape}, top5: ======")
     for (i, v) in zip(ind, value):
         print("{}:{}".format(i, v))

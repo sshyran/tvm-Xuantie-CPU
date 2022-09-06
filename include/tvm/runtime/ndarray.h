@@ -146,7 +146,6 @@ class NDArray : public ObjectRef {
    */
   TVM_DLL DLManagedTensor* ToDLPack() const;
 
-  TVM_DLL NDArray Duplicate();
   /*!
    * \brief Create an empty NDArray.
    * \param shape The shape of the new array.

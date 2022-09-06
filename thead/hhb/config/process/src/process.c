@@ -17,7 +17,7 @@
  * under the License.
  */
 
-/* auto generate by HHB_VERSION "1.12.0" */
+/* auto generate by HHB_VERSION "2.0.4" */
 
 #include "process.h"
 
@@ -244,7 +244,7 @@ struct image_data* get_input_data(const char* filename, uint32_t size) {
     // read data from tensor or txt file.
     img->data = _get_data_from_file(filename, size);
   } else if (type == FILE_BIN) {
-    img->data = (float*)get_binary_from_file(filename);
+    img->data = (float*)get_binary_from_file(filename, NULL);
   } else {
     free(img);
     return NULL;

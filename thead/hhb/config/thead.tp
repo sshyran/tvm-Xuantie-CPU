@@ -17,7 +17,7 @@
  * under the License.
  */
 
-/* auto generate by HHB_VERSION "1.12.0" */
+/* auto generate by HHB_VERSION "2.0.4" */
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -83,7 +83,7 @@ int main(int argc, char **argv) {
     }
 
     params_path = argv[1];
-    char *params = get_binary_from_file(params_path);
+    char *params = get_binary_from_file(params_path, NULL);
     if (params == NULL) {
         return -1;
     }
@@ -92,7 +92,7 @@ int main(int argc, char **argv) {
     float *output[output_num];
     for (i = 0; i < input_group_num; i++) {
         for (int j = 0; j < input_num; j++) {
-            input[j] = (float*)get_binary_from_file(data_path[i * input_num + j]);
+            input[j] = (float*)get_binary_from_file(data_path[i * input_num + j], NULL);
         }
 
         for (int j = 0; j < output_num; j++) {

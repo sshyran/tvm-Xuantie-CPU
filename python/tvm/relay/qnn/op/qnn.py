@@ -4079,6 +4079,34 @@ def csi_cache_conv1d(
     )
 
 
+def csi_custom_op(
+    data,
+    op_type,
+    custom_attr,
+    layer_name="",
+):
+    r"""
+    custom op
+    """
+
+    attr = []
+    if isinstance(custom_attr, dict):
+        for x, y in custom_attr.items():
+            attr.append(str(x))
+            attr.append(str(y))
+    elif isinstance(custom_attr, list):
+        attr = [str(x) for x in custom_attr]
+    else:
+        ValueError("Unsupported custom attr type: " + type(custom_attr))
+
+    return _make.CSICustomOp(
+        data,
+        op_type,
+        custom_attr,
+        layer_name,
+    )
+
+
 # register fuse pattern for qnn ops
 reg.register_pattern("qnn.quantize", OpPattern.OPAQUE)
 reg.register_pattern("qnn.dequantize", OpPattern.OPAQUE)

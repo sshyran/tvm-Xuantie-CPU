@@ -289,21 +289,6 @@ def intel_graphics(model="unknown", options=None):
     return _ffi_api.TargetCreate("opencl", *opts)
 
 
-def vivante(model="unknown", options=None):
-    """Returns an vivante target.
-
-    Parameters
-    ----------
-    model: str
-        The model of this device
-    options : str or list of str
-        Additional options
-    """
-    opts = ["-device=vivante", "-model=%s" % model]
-    opts = _merge_opts(opts, options)
-    return Target(" ".join(["opencl"] + opts))
-
-
 MICRO_SUPPORTED_MODELS = {
     "host": [],
     "atsamd51": ["-mcpu=cortex-m4"],

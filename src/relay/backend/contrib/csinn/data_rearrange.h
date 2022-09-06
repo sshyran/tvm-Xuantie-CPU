@@ -18,36 +18,28 @@
  */
 
 /*!
- * \file src/relay/backend/contrib/csinn/ch8601.h
- * \brief The base class for ch8601
+ * \file src/relay/backend/contrib/csinn/data_rearrange.h
+ * \brief The base class for external codegen tools.
  */
-#ifndef TVM_RELAY_BACKEND_CONTRIB_CSINN_CH8601_H_
-#define TVM_RELAY_BACKEND_CONTRIB_CSINN_CH8601_H_
+#ifndef TVM_RELAY_BACKEND_CONTRIB_CSINN_DATA_REARRANGE_H_
+#define TVM_RELAY_BACKEND_CONTRIB_CSINN_DATA_REARRANGE_H_
 
+#include <map>
 #include <string>
 #include <vector>
 
 #include "csinn.h"
 
+using std::vector;
 namespace tvm {
 namespace relay {
 namespace contrib {
 
-class CodegenCH8601 : public CodegenCSINN {
- public:
-  CodegenCH8601() : CodegenCSINN() {}
-  virtual ~CodegenCH8601() {}
-  virtual string EmitGraph(void);
-  virtual void VisitExpr_(const CallNode* call);
-
-  void malloc_buf(string out, int out_size) {}
-  void CreateMallocBuf(string name, std::vector<int> shape, string dtype) {}
-  void CreateTensorSessData() {}
-  void CreateHybridTensorSessData(std::vector<int> shape, string dtype) {}
-  void FreeTensor(const Expr& expr, string name) {}
-};
+CSIConstant* rearrange_data(CSIConstant* src_data, vector<int> shape, string src_layout,
+                            string dest_layout);
+void layout_to_OxHWIx(void* dest, void* src, vector<int> shape, int align);
 
 }  // namespace contrib
 }  // namespace relay
 }  // namespace tvm
-#endif  // TVM_RELAY_BACKEND_CONTRIB_CSINN_CH8601_H_
+#endif  // TVM_RELAY_BACKEND_CONTRIB_CSINN_DATA_REARRANGE_H_

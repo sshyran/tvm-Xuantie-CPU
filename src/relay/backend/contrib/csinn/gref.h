@@ -59,7 +59,8 @@ class CodegenGref : public CodegenCSINN {
   void FreeTensor(const Expr& expr, string name) {}
   // void GetAsymScale(float min_value, float max_value, int bits, Qinfo* qinfo);
 
-  void SessionRunMode() { PrintOneLine(code_stream_, "sess->base_run_mode = CSINN_RM_CPU_GRAPH;"); }
+  void SessionRunMode() { func_def_.OneLine("sess->base_run_mode = CSINN_RM_CPU_GRAPH;"); }
+  virtual bool IsIntegralOrNot(string const_kind);
 
  private:
   string rmode_{""};
